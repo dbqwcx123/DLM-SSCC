@@ -1,7 +1,3 @@
-<p align="center" width="100%">
-<img src="assets/logo.png" alt="logo" style="width: 75%; min-width: 300px; display: block; margin: auto;">
-</p>
-
 # DiffuLLaMA & DiffuGPT: Scaling Diffusion Language Models
 
 [![Huggingface Models](https://img.shields.io/badge/Models-Huggingface%20Models-bron)](https://huggingface.co/diffusionfamily)
@@ -13,12 +9,6 @@ Current Diffusion Language Models (DLMs) have been studied at a smaller scale co
 
 Through systematic evaluation on language modeling, reasoning, and commonsense benchmarks, we show that we can convert AR models ranging from 127M to 7B parameters (GPT2 and LLaMA) into diffusion models **DiffuGPT** and **DiffuLLaMA**, using less than 200B tokens for training. Here we open-source adaptation code, efficient fine-tuning scripts, and evaluation toolkits.
 
-<p align="center" width="100%">
-<img src="assets/overview.png" alt="overview" style="width: 100%; min-width: 300px; display: block; margin: auto;">
-</p>
-<p align = "center">
-The overview of adaptation process.
-</p>
 
 ### ⌚️ Update 
 - May 2025. Minor updates for paper and code (bug fixed). Checkout the latest dLLM [Dream-7B](https://hkunlp.github.io/blog/2025/dream/) from our lab. 🎉
