@@ -24,6 +24,7 @@ logging_steps: 10
 save_steps: 2000
 save_total_limit: 4
 plot_loss: false
+# 覆盖 output_dir 的内容，当 output_dir 指向 checkpoint 时可以继续训练
 overwrite_output_dir: true
 
 ### train

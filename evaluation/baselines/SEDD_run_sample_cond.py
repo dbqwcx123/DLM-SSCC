@@ -5,7 +5,7 @@ from load_model import load_model
 from transformers import GPT2TokenizerFast
 import sampling
 from sampling import AnalyticPredictor
-from model import utils as mutils
+from diffu_model import utils as mutils
 
 import re
 import numpy as np

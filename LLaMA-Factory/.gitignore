@@ -167,3 +167,5 @@ config/
 saves/
 output/
 wandb/
+image_io/
+.vscode/

@@ -1,10 +1,10 @@
 import torch
-from attention_patch import replace_attention_mask
+from utils.attention_patch import replace_attention_mask
 
 replace_attention_mask()
 
 from llamafactory.train.ddm.trainer import eval_forward, generate_samples, generate_samples_v2
-from model import DiscreteDiffusionModel
+from diffu_model import DiscreteDiffusionModel
 from argparse import ArgumentParser
 
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM

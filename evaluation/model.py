@@ -1,6 +1,6 @@
 import torch
 import torch.distributions as dists
-from attention_patch import replace_attention_mask
+from utils.attention_patch import replace_attention_mask
 
 replace_attention_mask()
 

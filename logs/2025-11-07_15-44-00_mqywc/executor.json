@@ -1,0 +1,43 @@
+{
+    "pipeline": [
+        {
+            "limit": -1,
+            "skip": 0,
+            "text_key": "text",
+            "id_key": "id",
+            "adapter": "<bound method BaseReader._default_adapter of \ud83d\udcd6 - READER: \ud83d\udcd2 Parquet>",
+            "_empty_warning": false,
+            "default_metadata": null,
+            "data_folder": "DataFolder(path='datasets/HuggingFaceFW/fineweb/sample/100BT', fs=<huggingface_hub.hf_file_system.HfFileSystem object at 0x00000170C89DE2D0>)",
+            "paths_file": null,
+            "recursive": true,
+            "glob_pattern": null,
+            "shuffle_files": false,
+            "file_progress": false,
+            "doc_progress": false,
+            "batch_size": 1000,
+            "read_metadata": true
+        },
+        {
+            "compression": "gzip",
+            "output_folder": "DataFolder(path='E:/1Master1/0Science_Research/0DLM-SSCC/DiffuLLaMA/data/fineweb-sample', fs=<fsspec.implementations.local.LocalFileSystem object at 0x00000170C8BB4F50>)",
+            "max_file_size": -1,
+            "file_id_counter": {},
+            "output_filename": "<string.Template object at 0x00000170C89C8D90>",
+            "output_mg": "<datatrove.io.OutputFileManager object at 0x00000170C89DF250>",
+            "adapter": "<bound method DiskWriter._default_adapter of \ud83d\udcbd - WRITER: \ud83d\udc3f Jsonl>",
+            "expand_metadata": false
+        }
+    ],
+    "logging_dir": "DataFolder(path='E:/1Master1/0Science_Research/0DLM-SSCC/DiffuLLaMA/logs/2025-11-07_15-44-00_mqywc', fs=<fsspec.implementations.local.LocalFileSystem object at 0x00000170C8BB4F50>)",
+    "skip_completed": true,
+    "randomize_start_duration": 0,
+    "tasks": 10,
+    "workers": 10,
+    "start_method": "spawn",
+    "local_tasks": 10,
+    "local_rank_offset": 0,
+    "depends": null,
+    "_launched": true,
+    "world_size": 10
+}
