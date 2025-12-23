@@ -23,7 +23,6 @@ from collections.abc import Iterator
 import itertools
 import os.path
 
-
 import numpy as np
 import imageio
 from torch.utils.data import DataLoader
@@ -33,21 +32,6 @@ import matplotlib.pyplot as plt
 import constants
 import sys
 import torchvision
-
-def _get_imagenet_dataset(data_path):
-    filet_count = 0
-    img_files = [os.path.join(data_path, item) for item in os.listdir(data_path)]
-    img_files = natsorted(img_files)
-    for file in img_files:
-        print(f"file: {file}, count: {filet_count}")
-        test = imageio.imread_v2(file)
-
-        # 检查图像是否为三通道，即RGB图像
-        if test.shape[-1] != 3:
-            continue
-
-        yield test, filet_count  # 逐个生成数据，返回图像和编号（类似于逐个return）
-        filet_count += 1
 
 
 def _extract_image_patches(image: np.ndarray) -> Iterator[bytes]:
@@ -67,7 +51,24 @@ def _extract_image_sequence(image: np.ndarray) -> Iterator[bytes]:
     for i in range(total_chunks):
         temp_sequence = image_sequence[i * sequence_length: (i + 1) * sequence_length]
         yield temp_sequence.reshape(h, w, image.shape[-1])
-        
+
+
+
+def _get_imagenet_dataset(data_path):
+    filet_count = 0
+    img_files = [os.path.join(data_path, item) for item in os.listdir(data_path)]
+    img_files = natsorted(img_files)
+    for file in img_files:
+        print(f"file: {file}, count: {filet_count}")
+        test = imageio.imread_v2(file)
+
+        # 检查图像是否为三通道，即RGB图像
+        if test.shape[-1] != 3:
+            continue
+
+        yield test, filet_count  # 逐个生成数据，返回图像和编号（类似于逐个return）
+        filet_count += 1
+
 
 def get_imagenet_iterator(
         num_chunks: int = constants.NUM_CHUNKS,
@@ -95,21 +96,16 @@ def get_imagenet_iterator(
 
 
 
-
 def _get_cifar10_dataset(data_path: str, train: bool = True):
     """
-    辅助函数，用于加载CIFAR-10数据集并逐个生成图像。
+    辅助函数，用于加载CIFAR-10数据集并逐个生成图像
     """
-    # 下载并加载CIFAR-10训练数据集
     cifar10_dataset = torchvision.datasets.CIFAR10(
         root=data_path, train=train, download=True
     )
-    # 遍历数据集
     for i in range(len(cifar10_dataset)):
         if i in [3,6,25,0,22,12,4,13,1,11]:  # 每个类别取一张图，共10张
-            # 获取图像和标签
             image, _ = cifar10_dataset[i]
-            # 将PIL图像格式转换为numpy数组
             image_np = np.array(image)
             # 生成图像和其对应的索引
             yield image_np, i
@@ -132,7 +128,7 @@ def get_cifar10_iterator(
             for i in range(data.shape[-1]):
                 # 提取单个通道，并保持第三个维度
                 temp_data = data[:, :, i:i+1] # 形状: (32, 32, 1)
-                # image_extractor 将会生成 h * w * 1 的数据块
+                # 生成 h * w * 1 的数据块
                 for patch in image_extractor(temp_data):
                     if idx >= num_chunks:
                         return
@@ -140,9 +136,67 @@ def get_cifar10_iterator(
                     idx += 1
         # 此分支处理将整个 32x32x3 图像作为一个整体的情况
         else:
-            # image_extractor 将会生成 h * w * 3 的数据块
+            # 生成 h * w * 3 的数据块
             for patch in image_extractor(data):
                 if idx >= num_chunks:
+                    return
+                yield patch, img_id
+                idx += 1
+
+
+
+def _get_div2k_dataset(data_path: str) -> Iterator[tuple]:
+    """
+    遍历 DIV2K 数据集目录，逐张读取 PNG 图像
+    """
+    if not os.path.exists(data_path):
+        raise ValueError(f"Data path {data_path} does not exist.")
+
+    img_files = [os.path.join(data_path, item) for item in os.listdir(data_path) 
+                 if item.lower().endswith('.png')]
+    img_files = natsorted(img_files)  # 自然排序
+    
+    filet_count = 0
+    for file in img_files:
+        # imageio 读取，确保是 RGB
+        # 注意：imageio.imread 在新版本中推荐使用 imread_v2
+        try:
+            test = imageio.imread(file)
+        except AttributeError:
+             test = imageio.v2.imread(file)
+
+        yield test, filet_count
+        filet_count += 1
+
+
+def get_div2k_iterator(
+        num_chunks: int = constants.NUM_CHUNKS, # 可以设置一个很大的数，或者忽略此参数以遍历所有
+        is_channel_wised: bool = constants.IS_CHANNEL_WISED,
+        is_seq: bool = False,
+        data_path: str = None,
+) -> Iterator[tuple]:
+    """
+    获取 DIV2K 数据集的 Patch 迭代器
+    按照 constants.CHUNK_SHAPE_2D 切片
+    """
+    div2k_dataset = _get_div2k_dataset(data_path)
+    idx = 0
+    image_extractor = _extract_image_sequence if is_seq else _extract_image_patches
+
+    for data, img_id in div2k_dataset:
+        if is_channel_wised:
+            # 遍历3个颜色通道 (R, G, B)
+            for i in range(data.shape[-1]):
+                temp_data = data[:, :, i:i+1]
+                for patch in image_extractor(temp_data):
+                    if idx >= num_chunks and num_chunks > 0: # 增加 num_chunks > 0 判断，方便全量训练
+                        return
+                    yield patch, img_id
+                    idx += 1
+        else:
+            # 整体 RGB 处理 (H, W, 3) -> (16, 16, 3) patches
+            for patch in image_extractor(data):
+                if idx >= num_chunks and num_chunks > 0:
                     return
                 yield patch, img_id
                 idx += 1
