@@ -20,9 +20,9 @@ from tqdm import tqdm
 
 # import constants
 # import data_loaders
-from . import constants, data_loaders
-from .utils import arithmetic_coder
-from .utils.ac_utils import normalize_pdf_for_arithmetic_coding, bits_to_bytes, bytes_to_bits
+from .. import constants, data_loaders
+from ..utils import arithmetic_coder
+from ..utils.ac_utils import normalize_pdf_for_arithmetic_coding, bits_to_bytes, bytes_to_bits
 
 import pdb
 from collections import Counter

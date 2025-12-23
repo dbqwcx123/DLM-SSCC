@@ -12,6 +12,7 @@ from diffu_model import *
 
 import constants, data_loaders
 from image_compress_diffugpt import compress_image
+from utils.ECCT_utils import set_seed
 
 def main(args):    
     idx = 0
@@ -31,7 +32,7 @@ def main(args):
     for data, frame_id in tqdm(data_iterator):
         # frame_id是图像编号，idx是patch编号
         # if frame_id in [3,6,25,0,22,12,4,13,1,11]:  # 每个类别取1张图，共10张
-        if frame_id in [0]:  # 测试用
+        # if frame_id in [0]:  # 测试用
             # print(f"处理序号为 {frame_id} 的图片的第 {idx % constants.PATCHES_PER_IMAGE + 1} 个图像块...")
             seq_array = data
             seq_array = seq_array.reshape(1, h*w*channels)  # [1, h*w*c]，同时验证大小是否正确
@@ -42,8 +43,7 @@ def main(args):
             
             num_bits = len(compressed_bits)
             total_bits += num_bits
-            
-        idx += 1
+            idx += 1
     print(f"\n所有图像块总压缩比特数: {total_bits}")
     return total_bits
     
@@ -66,6 +66,7 @@ def get_args():
     return args
 
 if __name__ == "__main__":
+    set_seed(42)
     args = get_args()
     
     print(f"模型路径: {args.model_path}")
@@ -74,7 +75,7 @@ if __name__ == "__main__":
     # 加载模型
     tokenizer, model = load_ddm(args)
     
-    steps_list = list(range(80, 160, 10))
+    steps_list = [100, 110, 120]
     results = []
     for s in tqdm(steps_list):
         args.diffusion_steps = s
@@ -102,4 +103,4 @@ if __name__ == "__main__":
     fig_path = "./diffugpt-s_steps_vs_bits.png"
     plt.savefig(fig_path, bbox_inches="tight", dpi=150)
     print(f"CSV: {csv_path}")
-    print(f"图像: {fig_path}")
+    # print(f"图像: {fig_path}")

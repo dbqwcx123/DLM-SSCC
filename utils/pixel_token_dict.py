@@ -1,6 +1,8 @@
+from transformers import AutoTokenizer
+
 def compute_pixel_token_ids(tokenizer):
     '''
-    :return: 0-255 token id in LLM vocabunary
+    返回一个 (256,) 大小的数组: 0-255 token_id in LLM vocabunary
     '''
     pixel_value = list(range(256))
     pixel_token_ids = [tokenizer.encode(str(value))[0] for value in pixel_value]
@@ -25,3 +27,12 @@ def tokenid_to_pixel(token_id, tokenizer):
     pixelvalue = mapping.get(token_id, None)
     
     return pixelvalue
+
+
+if __name__ == "__main__":
+    model_name = "../Model/diffugpt-s"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    pixel_token_ids = compute_pixel_token_ids(tokenizer)
+    print(f"pixel_token_ids: {pixel_token_ids}")
+    token_id_to_pixel = compute_token_ids_to_pixel(tokenizer)
+    print(f"token_id_to_pixel: {token_id_to_pixel}")
