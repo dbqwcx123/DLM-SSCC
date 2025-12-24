@@ -1,81 +1,144 @@
+import argparse
+import sys
+import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from PIL import Image
-from torch.utils.data import Dataset
-import argparse
+from transformers import AutoTokenizer, GPT2Tokenizer
 
-import sys
-import os
+# --- 1. 解决导入路径问题 ---
+# 获取当前脚本所在的绝对路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+# 获取项目根目录
+project_root = os.path.dirname(current_dir)
+# 将根目录加入 python 搜索路径
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
-from train_image_diffugpt import Div2kPatchDataset
+# --- 2. 导入项目模块 ---
+from train_image_diffugpt import Div2kPatchDataset as Div2kDataset
+import constants
 from diffu_model import load_ddm
 
 def verify_dataset(dataset):
-    print("正在获取第一个样本进行验证...")
-    sample = dataset[0] # 获取第一个样本
-    input_ids = sample['input_ids'].tolist()
-    
-    # 1. 去掉 BOS Token (假设第一个是 BOS)
-    # 注意：你需要确认 dataset.bos_token_id 是多少，通常检查 input_ids[0]
-    if input_ids[0] == dataset.bos_token_id:
-        token_ids = input_ids[1:] 
-    
-    # 2. Token IDs -> String -> Int
-    # 这一步依赖于 tokenizer 的具体实现，假设它是将 "128" 编码为 token
-    try:
-        decoded_str_list = dataset.tokenizer.convert_ids_to_tokens(token_ids)
-        decoded_text = dataset.tokenizer.decode(token_ids)
-        # tokenizer decode 出来是空格分隔的字符串 "123 45 0 255 ..."
-        pixel_vals = [int(p) for p in decoded_text.strip().split()]
-    except Exception as e:
-        print(f"解码失败，尝试直接转换 (依赖 Tokenizer 类型): {e}")
-        # 备用方案：如果 tokenizer 是简单的字符映射
-        pixel_vals = []
-        for tid in token_ids:
-            s = dataset.tokenizer.convert_ids_to_tokens(tid)
-            # 清洗特殊字符，例如 RoBERTa/GPT2 的 'Ġ'
-            s = s.replace('Ġ', '') 
-            pixel_vals.append(int(s))
+    print("\n" + "="*30)
+    print("开始验证数据集...")
+    print(f"数据集类型: {type(dataset)}")
 
-    # 3. 检查数据长度
-    h, w = dataset.patch_size
-    expected_len = h * w * 3
-    if len(pixel_vals) != expected_len:
-        print(f"错误：解码后的像素数量 {len(pixel_vals)} 与预期 {expected_len} 不符！")
+    # --- 3. 获取样本 (适配 IterableDataset) ---
+    try:
+        # 创建迭代器
+        data_iter = iter(dataset)
+        # 获取第一个样本
+        sample = next(data_iter)
+        print("成功通过迭代器获取到第一个样本。")
+    except StopIteration:
+        print("错误：数据集是空的 (StopIteration)。请检查数据路径是否正确。")
+        return
+    except Exception as e:
+        print(f"获取样本时发生未知错误: {e}")
         return
 
-    # 4. Reshape 回图像 (H, W, C)
-    # 注意：这里必须与你 Dataset 中的 flatten 顺序对应
-    # 你的代码使用的是 patch.flatten()，这是行优先：Row1, Row2...
-    img_array = np.array(pixel_vals, dtype=np.uint8).reshape(h, w, 3)
+    input_ids = sample['input_ids'].tolist()
+    print(f"样本 input_ids 长度: {len(input_ids)}")
+    print(f"前10个 Token ID: {input_ids[:10]}")
 
-    # 5. 可视化对比
-    plt.figure(figsize=(4, 4))
-    plt.imshow(img_array)
+    # --- 4. 解码 Token ---
+    # 获取 BOS Token ID (用于去除)
+    bos_id = dataset.tokenizer.bos_token_id
+    if bos_id is None:
+        bos_id = dataset.tokenizer.eos_token_id
+    
+    token_ids_to_viz = input_ids
+    if len(input_ids) > 0 and input_ids[0] == bos_id:
+        print(f"检测到开头是 BOS Token ({bos_id})，已去除以进行可视化。")
+        token_ids_to_viz = input_ids[1:]
+    
+    print("正在解码 Token 回像素值...")
+    try:
+        # 将 Token ID 转回 字符串 (e.g. "128", "255")
+        decoded_tokens = dataset.tokenizer.convert_ids_to_tokens(token_ids_to_viz)
+        
+        pixel_vals = []
+        for t in decoded_tokens:
+            # 清洗 Token (GPT2 Tokenizer 可能会有 'Ġ' 前缀)
+            s = t.replace('Ġ', '') if isinstance(t, str) else str(t)
+            try:
+                pixel_vals.append(int(s))
+            except ValueError:
+                # 忽略无法转为数字的特殊 token
+                continue
+                
+    except Exception as e:
+        print(f"解码失败: {e}")
+        return
+
+    # --- 5. 形状检查与 Reshape ---
+    h, w = constants.CHUNK_SHAPE_2D
+    # 检查是否是 Channel-wise (单通道) 还是 正常 RGB (3通道)
+    # 这里通过判断像素数量来自动推断
+    num_pixels = len(pixel_vals)
+    print(f"解码得到的有效像素数量: {num_pixels}")
+
+    expected_rgb = h * w * 3
+    expected_gray = h * w * 1
+
+    img_array = None
+    
+    if num_pixels == expected_rgb:
+        print(f"像素数量匹配 RGB 模式 ({h}x{w}x3)")
+        # 注意 reshape 顺序必须与 Dataset 中的 flatten 顺序一致
+        # 假设是 (R,G,B) 顺序或 (Row, Col, Channel)
+        img_array = np.array(pixel_vals, dtype=np.uint8).reshape(h, w, 3)
+    elif num_pixels == expected_gray:
+        print(f"像素数量匹配单通道模式 ({h}x{w}x1)")
+        img_array = np.array(pixel_vals, dtype=np.uint8).reshape(h, w)
+    else:
+        print(f"错误：像素数量 {num_pixels} 不符合预期。")
+        print(f"预期 RGB: {expected_rgb}, 预期单通道: {expected_gray}")
+        return
+
+    # --- 6. 可视化 ---
+    plt.figure(figsize=(5, 5))
+    if img_array.ndim == 3:
+        plt.imshow(img_array)
+    else:
+        plt.imshow(img_array, cmap='gray')
+        
     plt.title(f"Reconstructed Patch {h}x{w}")
     plt.axis('off')
+    print("正在显示图像，请检查弹出的窗口...")
     plt.show()
-    print("验证完成，请检查弹出的图像是否为正常的图像块（非花屏）。")
+    print("验证脚本运行结束。")
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m'])
-parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium'])
-parser.add_argument("--model_path", type=str, default='../Model')
-parser.add_argument("--diffusion_steps", type=int, default=100)
-parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-parser.add_argument("--smooth_k", type=int, default=1, help="概率平滑半径")
-parser.add_argument("--smooth_alpha", type=float, default=0.1, help="概率平滑强度")
-parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩(作为已知条件)")
-parser.add_argument("--data_dir", type=str, default="../Dataset/DIV2K/DIV2K_train_LR/X4_test", help="Path to DIV2K")
-parser.add_argument("--output_path", type=str, default="./image_io")
-args = parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser()
+    # 默认路径根据你的描述进行了调整
+    parser.add_argument("--data_path", type=str, default="../Dataset/DIV2K/DIV2K_train_LR/X4_test", help="数据文件夹路径")
+    parser.add_argument("--model_path", type=str, default="../Model/diffugpt-s")
+    parser.add_argument("--base_model_name", type=str, default="gpt2")
+    args = parser.parse_args()
 
-args.model_path = os.path.join(args.model_path, args.model_name)
+    # 1. 检查数据路径
+    abs_data_path = os.path.join(project_root, args.data_path) if args.data_path.startswith("..") else args.data_path
+    if not os.path.exists(abs_data_path) and not os.path.exists(args.data_path):
+         print(f"警告: 数据路径 {args.data_path} 似乎不存在。尝试使用绝对路径: {abs_data_path}")
+    
+    # 2. 加载 Tokenizer
+    tokenizer, model = load_ddm(args)
 
-tokenizer, model = load_ddm(args)
-verify_dataset(Div2kPatchDataset(args.data_dir, tokenizer, patch_size=(16, 16)))
+    # 3. 实例化 Dataset
+    # 注意：这里参数对应上一轮提供的 Div2kIterableDataset
+    print("正在实例化 Dataset...")
+    dataset = Div2kDataset(
+        data_path=args.data_path, # 传入路径
+        tokenizer=tokenizer,
+        num_chunks=5, # 测试模式只取少量数据
+        is_channel_wised=constants.IS_CHANNEL_WISED
+    )
+
+    # 4. 执行验证
+    verify_dataset(dataset)
+
+if __name__ == "__main__":
+    main()
