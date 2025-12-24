@@ -15,12 +15,11 @@
 
 """Defines project-wide constants."""
 
-NUM_IMAGE = 10
-NUM_IMAGE_CIFAR10 = 10000
-IMAGE_SHAPE = (32, 32, 3)
+NUM_IMAGE = 782
+IMAGE_SHAPE = (2032, 1072, 3)
 
 IS_CHANNEL_WISED = False  # RGB False; Gray True
-CHUNK_SHAPE_2D = (8, 8)  # 图像块的高度和宽度
+CHUNK_SHAPE_2D = (16, 16)  # 图像块的高度和宽度
 
 CHUNK_SIZE_BYTES = CHUNK_SHAPE_2D[0] * CHUNK_SHAPE_2D[1]
 CHUNK_SIZE_BYTES *= 1 if IS_CHANNEL_WISED else 3

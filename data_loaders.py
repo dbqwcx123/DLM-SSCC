@@ -161,11 +161,11 @@ def _get_div2k_dataset(data_path: str) -> Iterator[tuple]:
         # imageio 读取，确保是 RGB
         # 注意：imageio.imread 在新版本中推荐使用 imread_v2
         try:
-            test = imageio.imread(file)
+            image = imageio.imread(file)
         except AttributeError:
-             test = imageio.v2.imread(file)
+            image = imageio.v2.imread(file)
 
-        yield test, filet_count
+        yield image, filet_count
         filet_count += 1
 
 

@@ -7,11 +7,8 @@ import matplotlib.pyplot as plt
 from transformers import AutoTokenizer, GPT2Tokenizer
 
 # --- 1. 解决导入路径问题 ---
-# 获取当前脚本所在的绝对路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 获取项目根目录
 project_root = os.path.dirname(current_dir)
-# 将根目录加入 python 搜索路径
 if project_root not in sys.path:
     sys.path.append(project_root)
 
@@ -27,9 +24,7 @@ def verify_dataset(dataset):
 
     # --- 3. 获取样本 (适配 IterableDataset) ---
     try:
-        # 创建迭代器
         data_iter = iter(dataset)
-        # 获取第一个样本
         sample = next(data_iter)
         print("成功通过迭代器获取到第一个样本。")
     except StopIteration:
@@ -51,7 +46,6 @@ def verify_dataset(dataset):
     
     token_ids_to_viz = input_ids
     if len(input_ids) > 0 and input_ids[0] == bos_id:
-        print(f"检测到开头是 BOS Token ({bos_id})，已去除以进行可视化。")
         token_ids_to_viz = input_ids[1:]
     
     print("正在解码 Token 回像素值...")
@@ -107,9 +101,7 @@ def verify_dataset(dataset):
         
     plt.title(f"Reconstructed Patch {h}x{w}")
     plt.axis('off')
-    print("正在显示图像，请检查弹出的窗口...")
     plt.show()
-    print("验证脚本运行结束。")
 
 def main():
     parser = argparse.ArgumentParser()
