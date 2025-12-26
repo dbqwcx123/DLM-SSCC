@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.distributions as dists
 from utils.attention_patch import replace_attention_mask
@@ -239,42 +240,65 @@ def load_ddm(args):
     加载离散扩散模型
     """
     model_name = args.model_path
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(f'../Model/{args.model_name}')
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
     
-    if args.base_model_name in ['gpt2', 'gpt2-medium']:
-        with torch.device('cuda'):
-            model = DiscreteDiffusionModel.from_pretrained(
-                model_name, 
-                model=args.base_model_name, 
+    bin_file = os.path.join(model_name, "pytorch_model.bin")
+    use_manual_loading = os.path.exists(bin_file) and not os.path.exists(os.path.join(model_name, "model.safetensors"))
+    
+    if use_manual_loading:
+        print(f"检测到 pytorch_model.bin 且无 safetensors，使用手动模式加载模型权重: {model_name}")
+    
+        if args.base_model_name in ['gpt2', 'gpt2-medium']:
+            with torch.device('cuda'):
+                model = DiscreteDiffusionModel(
+                    model=args.base_model_name, 
+                    config=config, 
+                    tokenizer=tokenizer,
+                    device='cuda'
+                )
+        elif args.base_model_name == 'llama':
+            # ... LLaMA 的手动加载逻辑 ...
+            pass
+        else:
+            raise ValueError(f"未知的基础模型: {args.base_model_name}")
+        state_dict = torch.load(bin_file, map_location='cuda')
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        print(f"权重加载完成。丢失键: {len(missing)}, 多余键: {len(unexpected)}")
+    else:
+        print(f"使用默认 from_pretrained 加载模型: {model_name}")
+        if args.base_model_name in ['gpt2', 'gpt2-medium']:
+            with torch.device('cuda'):
+                model = DiscreteDiffusionModel.from_pretrained(
+                    model_name, 
+                    model=args.base_model_name, 
+                    config=config, 
+                    tokenizer=tokenizer,
+                    device='cuda'
+                )
+        elif args.base_model_name == 'llama':
+            if torch.cuda.get_device_capability()[0] >= 8:
+                print("使用 bfloat16 和 flash_attention_2 加载 LLaMA 模型")
+                torch_dtype = torch.bfloat16
+                attn_implementation = "flash_attention_2"  #  flash_attention_2 用linux跑
+            else:
+                print("使用 float16 和 eager_attention 加载 LLaMA 模型")
+                torch_dtype = torch.float16
+                attn_implementation = "eager"
+                
+            model = LlamaForCausalLM.from_pretrained(
+                model_name,
+                device_map='auto',
+                _attn_implementation=attn_implementation,
+                torch_dtype=torch_dtype
+            )
+        
+            model = DiscreteDiffusionModel(
+                model=model, 
                 config=config, 
                 tokenizer=tokenizer,
                 device='cuda'
-            )
-    elif args.base_model_name == 'llama':
-        if torch.cuda.get_device_capability()[0] >= 8:
-            print("使用 bfloat16 和 flash_attention_2 加载 LLaMA 模型")
-            torch_dtype = torch.bfloat16
-            attn_implementation = "flash_attention_2"  #  flash_attention_2 用linux跑
-        else:
-            print("使用 float16 和 eager_attention 加载 LLaMA 模型")
-            torch_dtype = torch.float16
-            attn_implementation = "eager"
-            
-        model = LlamaForCausalLM.from_pretrained(
-            model_name,
-            device_map='auto',
-            _attn_implementation=attn_implementation,
-            torch_dtype=torch_dtype
-        )
-    
-        model = DiscreteDiffusionModel(
-            model=model, 
-            config=config, 
-            tokenizer=tokenizer,
-            device='cuda'
-        ).to('cuda')
-    else:
-        raise ValueError(f"未知的基础模型: {args.base_model_name}")
+            ).to('cuda')
     
     return tokenizer, model

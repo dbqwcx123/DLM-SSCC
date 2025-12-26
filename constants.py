@@ -15,8 +15,9 @@
 
 """Defines project-wide constants."""
 
-NUM_IMAGE = 782
-IMAGE_SHAPE = (2032, 1072, 3)
+MODE = 'train'  # 'train', 'valid', 'test'
+NUM_IMAGE = 10 if MODE == 'test' else 782
+IMAGE_SHAPE = (256, 496, 3) if MODE == 'test' else (1072, 2032, 3)
 
 IS_CHANNEL_WISED = False  # RGB False; Gray True
 CHUNK_SHAPE_2D = (16, 16)  # 图像块的高度和宽度

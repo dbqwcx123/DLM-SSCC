@@ -18,15 +18,13 @@ import constants
 from diffu_model import load_ddm
 
 def verify_dataset(dataset):
-    print("\n" + "="*30)
-    print("开始验证数据集...")
+    print("="*30)
     print(f"数据集类型: {type(dataset)}")
 
     # --- 3. 获取样本 (适配 IterableDataset) ---
     try:
         data_iter = iter(dataset)
         sample = next(data_iter)
-        print("成功通过迭代器获取到第一个样本。")
     except StopIteration:
         print("错误：数据集是空的 (StopIteration)。请检查数据路径是否正确。")
         return
@@ -48,7 +46,6 @@ def verify_dataset(dataset):
     if len(input_ids) > 0 and input_ids[0] == bos_id:
         token_ids_to_viz = input_ids[1:]
     
-    print("正在解码 Token 回像素值...")
     try:
         # 将 Token ID 转回 字符串 (e.g. "128", "255")
         decoded_tokens = dataset.tokenizer.convert_ids_to_tokens(token_ids_to_viz)
@@ -106,7 +103,7 @@ def verify_dataset(dataset):
 def main():
     parser = argparse.ArgumentParser()
     # 默认路径根据你的描述进行了调整
-    parser.add_argument("--data_path", type=str, default="../Dataset/DIV2K/DIV2K_train_LR/X4_test", help="数据文件夹路径")
+    parser.add_argument("--data_path", type=str, default="../Dataset/DIV2K/DIV2K_train_LR_test", help="数据文件夹路径")
     parser.add_argument("--model_path", type=str, default="../Model/diffugpt-s")
     parser.add_argument("--base_model_name", type=str, default="gpt2")
     args = parser.parse_args()

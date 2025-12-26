@@ -9,7 +9,6 @@ import time
 
 from diffu_model import *
 import constants, data_loaders
-from data_loaders import patch_visualize
 from utils import arithmetic_coder
 from utils.ac_utils import normalize_pdf_for_arithmetic_coding, bits_to_bytes
 from utils.ECCT_utils import set_seed
@@ -56,7 +55,6 @@ def compress_image(num_str_tokens, model, tokenizer, args):
         output_fn=output_bits.append,
     )
     
-    print(f"开始扩散压缩过程，总步数 T={args.diffusion_steps}...")
     # 4. 扩散逆过程循环
     # 使用从 T-1 到 0 的循环。
     # 逻辑说明：
@@ -175,6 +173,7 @@ def main(args):
     total_bits = 0
     h, w = constants.CHUNK_SHAPE_2D
     channels = 1 if constants.IS_CHANNEL_WISED else 3  # 图像块的通道数
+    print(f"开始扩散压缩过程，总步数 T={args.diffusion_steps}...")
     for data, frame_id in tqdm(data_iterator):
         # 现在放到data_loaders里筛选，减少数据加载工作量
         # if frame_id in [3,6,25,0,22,12,4,13,1,11]:  # 每个类别取1张图，共10张
@@ -214,13 +213,15 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2-medium', choices=['gpt2', 'gpt2-medium', 'llama'])
-    parser.add_argument("--model_path", type=str, default='../Model')
-    parser.add_argument("--diffusion_steps", type=int, default=130)
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
+    parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
+    parser.add_argument("--checkpoint_name", type=str, default='train_ckp-4000_251225')
+    parser.add_argument("--diffusion_steps", type=int, default=100)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-    parser.add_argument("--smooth_k", type=int, default=1, help="概率平滑半径")
-    parser.add_argument("--smooth_alpha", type=float, default=0.1, help="概率平滑强度")
+    parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
+    parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
     parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩(作为已知条件)")
     parser.add_argument("--input_path", type=str, default="../Dataset/CIFAR10")
@@ -228,10 +229,14 @@ def get_args():
     args = parser.parse_args()
     
     args.model_path = os.path.join(args.model_path, args.model_name)
+    if args.ddm_sft:
+        args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_name)
     args.output_path = os.path.join(args.output_path, f'{args.confidence_st}_confidence', f'smooth_k{args.smooth_k}_alpha{args.smooth_alpha}')
     args.output_path = os.path.join(args.output_path, 'channel_indep') if constants.IS_CHANNEL_WISED else os.path.join(args.output_path, 'channel_corre')
-    args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', args.model_name, f'diffu_step{args.diffusion_steps}')
-    
+    if args.ddm_sft:
+        args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_name}', f'diffu_step{args.diffusion_steps}')
+    else:
+        args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
     return args
 
 if __name__ == "__main__":
