@@ -204,15 +204,15 @@ def main(args):
     
     # 日志配置
     # handlers = [logging.FileHandler(os.path.join(model_dir, 'logging_test.txt')), logging.StreamHandler()]
-    # logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=handlers)
+    # logging.basicConfig(level=print, format='%(message)s', handlers=handlers)
     
     print(f"Path to model\logs: {model_dir}")
     print(args)
     
     # 读取消息
     message_list, message_len, codeword_len = read_message_from_txt(args.msg_path)
-    logging.info(f'Message total length: {message_len}')
-    logging.info(f'Codeword total length: {codeword_len}')
+    print(f'Message total length: {message_len}')
+    print(f'Codeword total length: {codeword_len}')
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -224,16 +224,16 @@ def main(args):
         model = torch.load(os.path.join(args.model_path, 'best_model'))
         model.to(device)
     
-    logging.info(f'Transmission channel type: {args.channel}')
+    print(f'Transmission channel type: {args.channel}')
     
     # SNR范围设置
     SNR_range_test = np.arange(0, 8)
     ## TODO: 这里需要根据baseline调整SNR范围
     codeword_len_unified = 16*8*8*32*10
-    logging.info(f'Codeword length unified: {codeword_len_unified}')
+    print(f'Codeword length unified: {codeword_len_unified}')
     SNR_range_test_real = SNR_range_test + 10*np.log10(codeword_len_unified/codeword_len)
     # SNR_range_test_real = SNR_range_test
-    logging.info(f'SNR_range_test: {SNR_range_test_real}')
+    print(f'SNR_range_test: {SNR_range_test_real}')
     
     std_test = [SNR_to_std(ii) for ii in SNR_range_test_real]
     print(f'std_test: {std_test}')
@@ -280,8 +280,8 @@ def get_args():
     parser.add_argument('--code_k', type=int, default=24)
     parser.add_argument('--code_n', type=int, default=49)
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='entropy_confidence/smooth_k1_alpha0.1/channel_corre/patch(8, 8)/diffugpt-m')
-    parser.add_argument('--diffu_step', type=int, default=130)
+    parser.add_argument('--mode', type=str, default='entropy_confidence/smooth_k0_alpha0/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_ckp-4000_251225')
+    parser.add_argument('--diffu_step', type=int, default=100)
 
     # Model args
     parser.add_argument('--isParallel', type=bool, default=True)

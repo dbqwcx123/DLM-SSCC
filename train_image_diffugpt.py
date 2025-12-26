@@ -120,7 +120,8 @@ class Div2kPatchDataset(IterableDataset):
 def run_finetuning():
     # "../Dataset/DIV2K/DIV2K_HR_unified/train"
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, default="../Model/diffugpt-s", help="DiffuGPT path or base model")
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--model_path", type=str, default="../Model")
     parser.add_argument("--base_model_name", type=str, default="gpt2")
     parser.add_argument("--data_dir", type=str, default="../Dataset/DIV2K/DIV2K_HR_unified/train", help="Path to DIV2K")
     # parser.add_argument("--output_dir", type=str, default="./ddm-sft_output/diffugpt-s")
@@ -131,6 +132,7 @@ def run_finetuning():
     parser.add_argument("--epoch", type=int, default=2)
     args = parser.parse_args()
     
+    args.model_path = os.path.join(args.model_path, args.model_name)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     args.output_dir = os.path.join(args.model_path, "ddm-sft", f"train_{timestamp}")
     
