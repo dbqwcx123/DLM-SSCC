@@ -10,13 +10,15 @@ from tqdm import tqdm
 
 # 配置参数
 channels = ['AWGN']#, 'Rayleigh']
-snr_values = list(range(0, 8))
-image_indices = range(0, 10)  # 10张图像
-smooth_k, smooth_alpha = 1, 0.1
+dataset_type = 'DIV2K'
+snr_values = list(range(-3, 7))
+image_indices = range(0, 1)
+smooth_k, smooth_alpha = 0, 0
 conf_st = 'entropy'  # 'entropy' or 'topk' or 'simple'
 channel_wise = 'corre'  # 'indep' or 'corre'
-mode = 'diffugpt-m'  # 'diffugpt-s' or 'diffugpt-m'
-diffu_step = 130
+mode = 'diffugpt-s_ddm-sft'  # 'diffugpt-s' or 'diffugpt-m'
+checkpoint_dir = 'train_20251228_192149'
+diffu_step = 50
 channel_decode_alg = 'ECCT'  # 'bitflip' or 'ECCT'
 code_name = 'LDPC_K24_N49'
 
@@ -28,8 +30,11 @@ for channel in tqdm(channels, desc='Processing channels'):
     for snr in tqdm(snr_values, desc=f'Processing SNR for {channel}', leave=False):
         for idx in tqdm(image_indices, desc=f'Processing images for SNR={snr}', leave=False):
             # 构建路径
-            orig_path = f"../Dataset/CIFAR10/cifar10_test/test_batch_{idx}.png"
-            recon_path = f"./image_io/{conf_st}_confidence/smooth_k{smooth_k}_alpha{smooth_alpha}/channel_{channel_wise}/patch{constants.CHUNK_SHAPE_2D}/{mode}/diffu_step{diffu_step}/"
+            if dataset_type == 'CIFAR10':
+                orig_path = f"../Dataset/CIFAR10/cifar10_test/test_batch_{idx}.png"
+            elif dataset_type == 'DIV2K':
+                orig_path = f"../Dataset/DIV2K/DIV2K_LR_test/0801x4.png"
+            recon_path = f"./image_io/{dataset_type}/{conf_st}_confidence/smooth_k{smooth_k}_alpha{smooth_alpha}/channel_{channel_wise}/patch{constants.CHUNK_SHAPE_2D}/{mode}/{checkpoint_dir}/diffu_step{diffu_step}/"
             recon_path += f"{channel_decode_alg}_reconstruct/{code_name}/{channel}/SNR_{snr}/image_{idx}.png"
             
             # 检查路径是否存在
@@ -52,8 +57,13 @@ for channel in tqdm(channels, desc='Processing channels'):
                     recon_img = resize(recon_img, orig_img.shape, anti_aliasing=True)
                     recon_img = (recon_img * 255).astype(np.uint8)
                 
-                # 计算PSNR和SSIM
-                psnr_value = psnr(orig_img, recon_img, data_range=255)
+                # 手动处理完美重建，设置PSNR上限为 100 dB
+                mse = np.mean((orig_img.astype(np.float64) - recon_img.astype(np.float64)) ** 2)
+                if mse < 1e-10:
+                    psnr_value = 100.0  # 强制设为 100 dB
+                else:
+                    psnr_value = psnr(orig_img, recon_img, data_range=255)
+
                 ssim_value = ssim(orig_img, recon_img, data_range=255, multichannel=True, channel_axis=-1)
                 
                 # 存储结果
@@ -64,7 +74,8 @@ for channel in tqdm(channels, desc='Processing channels'):
                 print(f"Error processing image pair (channel={channel}, SNR={snr}, idx={idx}): {e}")
 
 # 计算平均值
-averages = {channel: {'psnr': [], 'ssim': []} for channel in channels}
+# 增加 perfect_ratio 列表
+averages = {channel: {'psnr': [], 'ssim': [], 'perfect_ratio': []} for channel in channels}
 for channel in channels:
     for snr in snr_values:
         psnr_list = results[channel][snr]['psnr']
@@ -72,25 +83,34 @@ for channel in channels:
         if psnr_list and ssim_list:  # 确保列表不为空
             avg_psnr = np.mean(psnr_list)
             avg_ssim = np.mean(ssim_list)
+            
+            # 计算完美重建比例
+            perfect_count = sum(1 for p in psnr_list if p == 100.0)
+            perfect_ratio = (perfect_count / len(psnr_list)) * 100.0
+            averages[channel]['perfect_ratio'].append(perfect_ratio)
+
             averages[channel]['psnr'].append(avg_psnr)
             averages[channel]['ssim'].append(avg_ssim)
         else:
             print(f"Warning: No data for {channel}, SNR={snr}")
 
 # 将结果保存到文本文件
-csv_filename = f'./image_io/curves/results_{mode}_{conf_st}_{channel_wise}_step{diffu_step}_k{smooth_k}alpha{smooth_alpha}_add1.csv'
+csv_filename = f'./image_io/_curves/{dataset_type}_{mode}_{checkpoint_dir}.csv'
 with open(csv_filename, 'w', newline='') as csvfile:
     writer = csv.writer(csvfile)
-    writer.writerow(['Channel', 'SNR', 'Avg PSNR', 'Avg SSIM'])
+    # Header 增加 Perfect Ratio (%) 
+    writer.writerow(['Channel', 'SNR', 'Avg PSNR', 'Avg SSIM', 'Perfect Ratio (%)'])
     
     for channel in channels:
         for i, snr in enumerate(snr_values):
             if averages[channel]['psnr']:  # 确保列表不为空
+                # 写入数据时增加 perfect_ratio
                 writer.writerow([
                     channel, 
                     snr, 
                     averages[channel]['psnr'][i],
-                    averages[channel]['ssim'][i]
+                    averages[channel]['ssim'][i],
+                    averages[channel]['perfect_ratio'][i]
                 ])
 
 print("处理完成！结果已保存到 csv 文件中。")

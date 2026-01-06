@@ -11,6 +11,8 @@ from pyldpc import make_ldpc
 from utils.ECCT_utils import *
 import warnings
 warnings.filterwarnings("ignore")
+from tqdm import tqdm
+import constants
 
 ##################################################################
 
@@ -174,14 +176,14 @@ def estimate(model, device, dataloader_list, SNR_range_test, code):
             #     f.write("".join(map(str, combined_x_pred)) + "\n")
         
         # 打印性能结果
-        print('\nNoise BER ' + ' '.join(
-            ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_noise_ber, SNR_range_test)]))
+        # print('\nNoise BER ' + ' '.join(
+        #     ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_noise_ber, SNR_range_test)]))
         print('Test BER ' + ' '.join(
             ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_ber_list, SNR_range_test)]))
-        print('Test FER ' + ' '.join(
-            ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_fer_list, SNR_range_test)]))
+        # print('Test FER ' + ' '.join(
+        #     ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_fer_list, SNR_range_test)]))
     
-    print(f'Test Time {time.time() - t:.2f} s\n')
+    # print(f'Test Time {time.time() - t:.2f} s\n')
     return test_loss_list, test_loss_ber_list, test_loss_fer_list
 
 ##################################################################
@@ -227,9 +229,11 @@ def main(args):
     print(f'Transmission channel type: {args.channel}')
     
     # SNR范围设置
-    SNR_range_test = np.arange(0, 8)
+    SNR_range_test = np.arange(-3, 7)
     ## TODO: 这里需要根据baseline调整SNR范围
-    codeword_len_unified = 16*8*8*32*10
+    _out_channel = 2*8
+    _float_base = 32
+    codeword_len_unified = _out_channel * (constants.IMAGE_SHAPE[0]//4) * (constants.IMAGE_SHAPE[1]//4) * _float_base * constants.NUM_IMAGE_TEST
     print(f'Codeword length unified: {codeword_len_unified}')
     SNR_range_test_real = SNR_range_test + 10*np.log10(codeword_len_unified/codeword_len)
     # SNR_range_test_real = SNR_range_test
@@ -241,7 +245,7 @@ def main(args):
     # 性能评估
     test_loss_sum, test_loss_ber_sum, test_loss_fer_sum = [0] * len(std_test), [0] * len(std_test), [0] * len(std_test)
     
-    for message in message_list:
+    for message in tqdm(message_list):
         dataloader_list = [My_Dataset(message, code, sigma=[std_test[ii]]) for ii in range(len(std_test))]
         test_loss_list, test_loss_ber_list, test_loss_fer_list = estimate(
             model, device, dataloader_list, SNR_range_test, code)
@@ -280,8 +284,8 @@ def get_args():
     parser.add_argument('--code_k', type=int, default=24)
     parser.add_argument('--code_n', type=int, default=49)
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='entropy_confidence/smooth_k0_alpha0/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_ckp-4000_251225')
-    parser.add_argument('--diffu_step', type=int, default=100)
+    parser.add_argument('--mode', type=str, default='DIV2K/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-m_ddm-sft/train_20260103_162805')
+    parser.add_argument('--diffu_step', type=int, default=50)
 
     # Model args
     parser.add_argument('--isParallel', type=bool, default=True)

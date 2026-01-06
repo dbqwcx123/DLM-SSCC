@@ -219,7 +219,7 @@ def main(args):
         return
 
     ## channel = AWGN/Rayleigh
-    for SNR in range(7, -1, -1):
+    for SNR in range(6, -4, -1):
         print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
         args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
         save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
@@ -247,17 +247,17 @@ def main(args):
             if not raw_bit_string:
                 continue
             
-            ###移除哨兵比特
+            ###移除停止位
             # 1. 去除末尾所有的 '0' (Padding)
             stripped_padding = raw_bit_string.rstrip('0')
             
-            # 2. 去除末尾的哨兵 '1'
+            # 2. 去除末尾的停止位 '1'
             if len(stripped_padding) > 0:
                 bit_string = stripped_padding[:-1]
             else:
-                # 这种情况理论上不应该发生，除非信道误码把哨兵 '1' 变成了 '0'
+                # 这种情况理论上不应该发生，除非信道误码把停止位 '1' 变成了 '0'
                 # 或者原始数据本身就是空的
-                print(f"警告: 第 {line_idx} 行数据异常，未找到哨兵比特")
+                print(f"警告: 第 {line_idx} 行数据异常，未找到停止位")
                 bit_string = ""
                 
             # 3. 解压单个 Patch
@@ -294,24 +294,33 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2-medium', choices=['gpt2', 'gpt2-medium', 'llama'])
-    parser.add_argument("--model_path", type=str, default='../Model')
-    parser.add_argument("--diffusion_steps", type=int, default=130)
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
+    parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20251228_192149')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-48000')
+    parser.add_argument("--diffusion_steps", type=int, default=50)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-    parser.add_argument("--smooth_k", type=int, default=1, help="概率平滑半径")
-    parser.add_argument("--smooth_alpha", type=float, default=0.1, help="概率平滑强度")
+    parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
+    parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
     parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩")
     parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
+    parser.add_argument("--dataset_type", type=str, default="DIV2K")
     parser.add_argument("--root_dir", type=str, default="./image_io", help="输入输出文件夹的根目录")
     args = parser.parse_args()
     
     # 根据解析后的 diffusion_steps 和 channel 动态设置默认路径
     args.model_path = os.path.join(args.model_path, args.model_name)
-    args.root_dir = os.path.join(args.root_dir, f'{args.confidence_st}_confidence', f'smooth_k{args.smooth_k}_alpha{args.smooth_alpha}')
+    if args.ddm_sft:
+        args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)
+    args.root_dir = os.path.join(args.root_dir, f'{args.dataset_type}', f'{args.confidence_st}_confidence', f'smooth_k{args.smooth_k}_alpha{args.smooth_alpha}')
     args.root_dir = os.path.join(args.root_dir, 'channel_indep') if constants.IS_CHANNEL_WISED else os.path.join(args.root_dir, 'channel_corre')
-    args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', args.model_name, f'diffu_step{args.diffusion_steps}')
+    if args.ddm_sft:
+        args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
+    else:
+        args.root_dir = os.path.join(args.outpuroot_dirt_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
     
     if args.channel:
         args.input_dir  = os.path.join(args.root_dir, f"ECCT_forward/LDPC_K24_N49/{args.channel}")

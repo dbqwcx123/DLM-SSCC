@@ -126,7 +126,7 @@ def compress_image(num_str_tokens, model, tokenizer, args):
             # 移动到 CPU 并转为 double 计算 Softmax，获取预测的概率分布
             logits_fp64 = logits_pixel[0, idx].detach().cpu().double()
             prob_dist = torch.softmax(logits_fp64, dim=-1)
-            prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
+            # prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
             prob_dist = prob_dist.numpy()
             
             # 调试信息：打印真实值及其概率分布前5
@@ -154,10 +154,11 @@ def main(args):
     #######################################################################
     task_prompt = "Every three values denote an RGB pixel of a flattened image. Predict the next RGB pixel based on the previous pixels."
     # 1. 准备数据
-    print(f"正在从目录读取待压缩图像: {args.input_path}")
+    print(f"图像数据集路径: {args.input_path}")
+    print(f"原始图像大小: {constants.IMAGE_SHAPE}，处理图像块形状: {constants.CHUNK_SHAPE_2D}")
     ##TODO: 数据加载RGB顺序要改一下
-    data_iterator = data_loaders.get_cifar10_iterator(
-                    num_chunks=constants.NUM_CHUNKS,
+    data_iterator = data_loaders.get_image_iterator(
+                    num_chunks=constants.NUM_CHUNKS_TEST,
                     is_channel_wised=constants.IS_CHANNEL_WISED,  # 是否分通道处理
                     is_seq=False,  # 按图像块顺序提取
                     data_path=args.input_path)
@@ -192,7 +193,7 @@ def main(args):
             
             num_bits = len(compressed_bits)
             
-            ###添加哨兵比特 (Sentinel Bit)
+            ###添加停止位 (Stop Bit)
             # 仅在末尾添加一个 '1'，作为数据结束的标志，保护有效数据的末尾 '0' 不被误删
             bits_to_write = compressed_bits + '1'
             
@@ -213,28 +214,40 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2-medium', choices=['gpt2', 'gpt2-medium', 'llama'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
-    parser.add_argument("--checkpoint_name", type=str, default='train_ckp-4000_251225')
-    parser.add_argument("--diffusion_steps", type=int, default=100)
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20260103_162805')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-38000')
+    parser.add_argument("--diffusion_steps", type=int, default=50)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-    parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
-    parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
+    # parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
+    # parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
     parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩(作为已知条件)")
-    parser.add_argument("--input_path", type=str, default="../Dataset/CIFAR10")
+    parser.add_argument("--dataset_type", type=str, default="DIV2K")
+    parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args()
     
     args.model_path = os.path.join(args.model_path, args.model_name)
     if args.ddm_sft:
-        args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_name)
-    args.output_path = os.path.join(args.output_path, f'{args.confidence_st}_confidence', f'smooth_k{args.smooth_k}_alpha{args.smooth_alpha}')
+        args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)
+    
+    if args.dataset_type == "CIFAR10":
+        args.input_path = os.path.join(args.input_path, "CIFAR10", "cifar10_test")
+    elif args.dataset_type == "DIV2K":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test")
+    elif args.dataset_type == "ImageNet":
+        args.input_path = os.path.join(args.input_path, "ImageNet", "test_unified")
+    else:
+        raise ValueError(f"未知的数据集类型: {args.dataset_type}")
+    
+    args.output_path = os.path.join(args.output_path, f'{args.dataset_type}', f'{args.confidence_st}_confidence') #, f'smooth_k{args.smooth_k}_alpha{args.smooth_alpha}')
     args.output_path = os.path.join(args.output_path, 'channel_indep') if constants.IS_CHANNEL_WISED else os.path.join(args.output_path, 'channel_corre')
     if args.ddm_sft:
-        args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_name}', f'diffu_step{args.diffusion_steps}')
+        args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
     else:
         args.output_path = os.path.join(args.output_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
     return args
