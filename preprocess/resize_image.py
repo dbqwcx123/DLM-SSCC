@@ -1,5 +1,6 @@
 import os
 import sys
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
@@ -13,7 +14,7 @@ def scan_and_calculate_size(src_dir, threshold=1080, fixed_width=2032, base_num=
         raise ValueError(f"在路径 {src_dir} 下没有找到图片文件")
         
     valid_files = []
-    min_h = threshold
+    min_h = np.inf
     
     print(f"正在扫描并筛选图片 (自动旋转竖图 -> 横图)...")
     print(f"筛选条件: 短边 >= {threshold}, 长边(宽度) >= {fixed_width}")
@@ -114,12 +115,12 @@ def process_and_save(src_dir, dst_dir, valid_files, target_w, target_h):
 
 if __name__ == "__main__":
     # ---------------- 配置区域 ----------------
-    source_path = "../Dataset/DIV2K/DIV2K_train_HR"      
-    target_path = "../Dataset/DIV2K/DIV2K_train_HR_unified" 
+    source_path = "../Dataset/Kodak/Kodak24"      
+    target_path = "../Dataset/Kodak/Kodak_unified" 
     
     base_num = 16          
-    fixed_width = 2032     
-    min_threshold = 1080   # 凡是短边小于此值的图(无论横竖)都会被丢弃
+    fixed_width = 768     
+    min_threshold = 512   # 凡是短边小于此值的图(无论横竖)都会被丢弃
     # -----------------------------------------
 
     # 1. 检查源目录

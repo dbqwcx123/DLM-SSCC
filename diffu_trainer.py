@@ -30,9 +30,10 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
         重写 inner_forward 以实现 Image-Specific 的 Loss 计算
         """
         x = inputs["input_ids"]
-        # src_mask 用于标记“不应该被 Mask 的区域”（如条件部分），但在纯图像压缩中通常是全 False (全部可压缩)
+        # src_mask 用于标记“不应该被 Mask 的区域”（如条件部分）
         if "src_mask" not in inputs:
             src_mask = torch.zeros_like(x, dtype=torch.bool)
+            src_mask[:, 0] = True  # 第一个 token 是 BOS，不被 Mask
         else:
             src_mask = inputs["src_mask"].bool()
             
@@ -57,7 +58,6 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
         x_t = self.transition(x, sigma[:, None], maskable_mask=~src_mask)
 
         # --- 3. 模型前向传播 ---
-        # 获取 Embeddings
         if hasattr(model, "module"): # Handle DDP
             get_embeds = model.module.get_embeds
         else:

@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from transformers import AutoConfig, AutoTokenizer, TrainingArguments
 from torch.utils.data import IterableDataset, get_worker_info
+import torch.distributed as dist
 import math
 import imageio
 from natsort import natsorted
@@ -13,7 +14,7 @@ import wandb
 from datetime import datetime
 import random
 
-from data_loaders import get_div2k_iterator
+# from data_loaders import get_div2k_iterator
 import constants
 from diffu_model import *
 from diffu_trainer import ImageDiscreteDiffusionTrainer
@@ -22,13 +23,14 @@ from llamafactory.hparams import FinetuningArguments
 
 
 class Div2kPatchDataset(IterableDataset):
-    def __init__(self, data_path, tokenizer, num_chunks=-1, is_channel_wised=False, shuffle=True):
+    def __init__(self, data_path, tokenizer, num_chunks=-1, is_channel_wised=False, shuffle=True, split='train'):
         super().__init__()
         self.data_path = data_path
         self.tokenizer = tokenizer
         self.num_chunks = num_chunks
         self.is_channel_wised = is_channel_wised
         self.shuffle = shuffle
+        self.split = split
         
         # 1. 预先加载所有文件路径 (移出 __iter__ 以便切分)
         if not os.path.exists(data_path):
@@ -95,48 +97,71 @@ class Div2kPatchDataset(IterableDataset):
                 idx += 1
 
     def __iter__(self):
-        # 2. 关键修改：多进程切分逻辑
+        # --- 新增：处理多卡 DDP 环境下的数据切分 ---
+        if dist.is_initialized():
+            num_gpus = dist.get_world_size() # 总共有几张卡
+            gpu_id = dist.get_rank()         # 当前是第几张卡
+        else:
+            num_gpus = 1
+            gpu_id = 0
+
+        # 先把总文件列表按 GPU 数量均分
+        per_gpu_files_count = int(math.ceil(len(self.all_files) / float(num_gpus)))
+        start_gpu = gpu_id * per_gpu_files_count
+        end_gpu = min(start_gpu + per_gpu_files_count, len(self.all_files))
+        files_on_this_gpu = self.all_files[start_gpu:end_gpu]
+        
+        # --- 原有逻辑：处理单卡内的多 Worker 切分 ---
         worker_info = get_worker_info()
         
         if worker_info is None:
-            # 单进程模式 (num_workers=0)
-            files_to_process = self.all_files
+            # 单进程模式
+            files_to_process = files_on_this_gpu
         else:
-            # 多进程模式：将文件列表平均分给每个 worker
-            per_worker = int(math.ceil(len(self.all_files) / float(worker_info.num_workers)))
+            # 多进程模式：基于当前 GPU 分到的文件，再分给每个 worker
+            per_worker = int(math.ceil(len(files_on_this_gpu) / float(worker_info.num_workers)))
             worker_id = worker_info.id
             start = worker_id * per_worker
-            end = min(start + per_worker, len(self.all_files))
-            files_to_process = self.all_files[start:end]
+            end = min(start + per_worker, len(files_on_this_gpu))
+            files_to_process = files_on_this_gpu[start:end]
             
         # 调用内部生成器
         return self._get_image_iterator(files_to_process)
 
     def __len__(self):
-        return constants.NUM_CHUNKS
-    
-    
+        if self.num_chunks > 0:
+            return self.num_chunks
+        else:
+            if self.split == 'train':
+                return constants.NUM_CHUNKS_TRAIN
+            elif self.split == 'valid':
+                return constants.NUM_CHUNKS_VALID
+            else:
+                return constants.NUM_CHUNKS_TEST
 
 def run_finetuning():
     # "../Dataset/DIV2K/DIV2K_HR_unified/train"
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
     parser.add_argument("--model_path", type=str, default="../Model")
-    parser.add_argument("--base_model_name", type=str, default="gpt2")
-    parser.add_argument("--data_dir", type=str, default="../Dataset/DIV2K/DIV2K_HR_unified/train", help="Path to DIV2K")
+    parser.add_argument("--base_model_name", type=str, default="gpt2-medium", choices=['gpt', 'gpt-medium', 'sllama'])
+    parser.add_argument("--data_dir", type=str, default="../Dataset/DIV2K/DIV2K_HR_unified", help="Path to DIV2K")
     # parser.add_argument("--output_dir", type=str, default="./ddm-sft_output/diffugpt-s")
     parser.add_argument("--diffusion_steps", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--grad_acc_step", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--epoch", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--epoch", type=int, default=5)
     args = parser.parse_args()
     
     args.model_path = os.path.join(args.model_path, args.model_name)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     args.output_dir = os.path.join(args.model_path, "ddm-sft", f"train_{timestamp}")
     
-    wandb.init(project="ImageCompression-DiffuGPT", name=f"run_diffusteps{args.diffusion_steps}")
+    # 获取当前进程的 local_rank (由 torchrun 自动注入环境变量)
+    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    if local_rank in [-1, 0]:
+        wandb.init(project="ImageCompression-DiffuGPT", name=f"run_diffusteps{args.diffusion_steps}")
     # 1. Load Model (Using User's Logic)
     print("Loading tokenizer and DiscreteDiffusionModel...")
     # 注意：这里使用了你提供的 model.py 中的类
@@ -144,12 +169,21 @@ def run_finetuning():
 
     # 2. Prepare Dataset
     print("Loading DIV2K dataset...")
-    dataset = Div2kPatchDataset(
-        data_path=args.data_dir,
+    train_dataset = Div2kPatchDataset(
+        data_path=args.data_dir+"/train",
         tokenizer=tokenizer,
-        num_chunks=-1,  # 读取全部数据
+        num_chunks=-1,  # 根据dataset的__len__自动计算
         is_channel_wised=constants.IS_CHANNEL_WISED,
-        shuffle=True
+        shuffle=True,
+        split='train'
+    )
+    eval_dataset = Div2kPatchDataset(
+        data_path=args.data_dir+"/valid",
+        tokenizer=tokenizer,
+        num_chunks=2000,
+        is_channel_wised=constants.IS_CHANNEL_WISED,
+        shuffle=True,
+        split='valid'
     )
     
     # 3. Training Arguments
@@ -159,30 +193,41 @@ def run_finetuning():
         overwrite_output_dir=True,
         do_train=True,
         per_device_train_batch_size=args.batch_size,
-        dataloader_num_workers=20,
+        dataloader_num_workers=16,
         dataloader_pin_memory=True,  # 加速数据从内存到显存的传输
         gradient_accumulation_steps=args.grad_acc_step,
         learning_rate=args.lr,
         num_train_epochs=args.epoch,
         lr_scheduler_type='cosine',
-        max_steps=10000,
-        warmup_steps=1000,
-        logging_steps=10,
-        save_steps=200,
-        save_total_limit=2,
+        do_eval=True,
+        per_device_eval_batch_size=args.batch_size*8,
+        evaluation_strategy="steps",
+        eval_steps=2000,
+        metric_for_best_model="loss",   # 根据 loss 判断哪个模型最好
+        load_best_model_at_end=True,    # 训练结束后加载验证集 loss 最低的模型
+        max_steps=66000,
+        warmup_steps=6000,
+        logging_steps=50,
+        save_steps=2000,
+        save_total_limit=3,
         save_safetensors=False,  # 保存为 .bin 格式
         bf16=True,
         # fp16=True if torch.cuda.is_available() else False,
         # deepspeed='ds_z2_config.json',
         ddp_timeout=180000000,
         remove_unused_columns=False,  # 重要：防止 input_ids 被过滤
+        # resume_from_checkpoint="../Model/diffugpt-m/ddm-sft/train_20251230_022236/checkpoint-38000",
+        # ignore_data_skip=True,  # 继续训练时忽略数据跳过
         report_to="wandb",
+        weight_decay=0.01,  # 增加权重衰减
     )
 
     # 4. Finetuning Args (用于 Trainer 内部的 diffusion 参数)
     finetuning_args = FinetuningArguments(
         stage="ddm-sft",
         diffusion_steps=args.diffusion_steps,
+        score_temp=1.0,
+        logits_temp=1.0,
         anneal_steps=1,
         shift=True,
     )
@@ -194,8 +239,8 @@ def run_finetuning():
         args=training_args,
         finetuning_args=finetuning_args,
         data_collator=None,  # 图像patch大小固定，无需padding，默认collator即可
-        train_dataset=dataset,
-        # eval_dataset=dataset,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         processor=None
     )
@@ -210,4 +255,5 @@ def run_finetuning():
     print("Training Finished.")
 
 if __name__ == "__main__":
+    # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 train_image_diffugpt.py
     run_finetuning()

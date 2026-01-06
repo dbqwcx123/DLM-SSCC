@@ -1,15 +1,19 @@
 import argparse
 import os
+import sys
 import struct
 from tqdm import tqdm
-import torch
-import torch.nn.functional as F
 import numpy as np
 import time
 
 from transformers import AutoConfig, AutoTokenizer
-from diffu_model import *
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.append(project_root)
+    
+from diffu_model import *
 import constants, data_loaders
 from image_compress_diffugpt import compress_image
 from utils.ECCT_utils import set_seed
@@ -22,8 +26,8 @@ def main(args):
     
     # 1. 准备数据
     ##TODO: 数据加载RGB顺序要改一下
-    data_iterator = data_loaders.get_cifar10_iterator(
-                    num_chunks=constants.NUM_CHUNKS,
+    data_iterator = data_loaders.get_image_iterator(
+                    num_chunks=constants.NUM_CHUNKS_TEST,
                     is_channel_wised=constants.IS_CHANNEL_WISED,
                     is_seq=False,  # 按图像块顺序提取
                     data_path=args.input_path)
@@ -33,7 +37,7 @@ def main(args):
         # frame_id是图像编号，idx是patch编号
         # if frame_id in [3,6,25,0,22,12,4,13,1,11]:  # 每个类别取1张图，共10张
         # if frame_id in [0]:  # 测试用
-            # print(f"处理序号为 {frame_id} 的图片的第 {idx % constants.PATCHES_PER_IMAGE + 1} 个图像块...")
+            print(f"处理序号为 {frame_id} 的图片的第 {idx % constants.PATCHES_PER_IMAGE + 1} 个图像块...")
             seq_array = data
             seq_array = seq_array.reshape(1, h*w*channels)  # [1, h*w*c]，同时验证大小是否正确
             flattened_array = seq_array.flatten()  # 展平为一维数组
@@ -51,18 +55,25 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, default='../Model/diffugpt-s')
-    parser.add_argument("--base_model_name", type=str, default='gpt2')
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
+    parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
     # parser.add_argument("--diffusion_steps", type=int, default=110)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
     parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
     parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
     parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩(作为已知条件)")
-    parser.add_argument("--input_path", type=str, default="../Dataset/CIFAR10")
+    parser.add_argument("--input_path", type=str, default="../Dataset/DIV2K/DIV2K_LR_test")
     # parser.add_argument("--output_path", type=str, default="./image_io/diffugpt-s/diffu_step_max")
     args = parser.parse_args()
-    
+        
+    args.model_path = os.path.join(args.model_path, args.model_name)
+    if args.ddm_sft:
+        args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)
     return args
 
 if __name__ == "__main__":
@@ -75,7 +86,7 @@ if __name__ == "__main__":
     # 加载模型
     tokenizer, model = load_ddm(args)
     
-    steps_list = [100, 110, 120]
+    steps_list = list(range(20, 101, 20))
     results = []
     for s in tqdm(steps_list):
         args.diffusion_steps = s
@@ -83,7 +94,7 @@ if __name__ == "__main__":
         results.append((s, total_bits))
     # 保存为 CSV
     import csv
-    csv_path ="./diffugpt-s_steps_vs_bits.csv"
+    csv_path ="./preprocess/diffugpt-s_ddm-sft_DIV2K.csv"
     with open(csv_path, "w", newline="") as cf:
         writer = csv.writer(cf)
         writer.writerow(["diffusion_steps", "total_bits"])
@@ -100,7 +111,7 @@ if __name__ == "__main__":
     plt.ylabel("total_bits")
     plt.title("total_bits vs diffusion_steps")
     plt.grid(True)
-    fig_path = "./diffugpt-s_steps_vs_bits.png"
+    fig_path = "./preprocess/diffugpt-s_ddm-sft_DIV2K.png"
     plt.savefig(fig_path, bbox_inches="tight", dpi=150)
-    print(f"CSV: {csv_path}")
+    # print(f"CSV: {csv_path}")
     # print(f"图像: {fig_path}")
