@@ -30,9 +30,8 @@ def decompress_image(bit_string, model, tokenizer, args):
     # 1. 确定序列参数
     # 假设 constants 中定义了块的大小，例如 32x32
     h, w = constants.CHUNK_SHAPE_2D
-    channels = 3 # RGB
-    # 序列长度 = 像素数 + BOS
-    seq_len = h * w * channels + 1 
+    channels = 1 if constants.IS_CHANNEL_WISED else 3
+    seq_len = h * w * channels + 1  # 序列长度 = 像素数 + BOS
     batch_size = 1
     
     data_iter = iter(bit_string)
@@ -147,17 +146,13 @@ def decompress_image(bit_string, model, tokenizer, args):
     for s in token_strs:
         # 处理可能的特殊字符（如 GPT2 的 Ġ）
         s_clean = s.replace('Ġ', '')
-        if s_clean.isdigit():
-            try:
-                val = int(s_clean)
-                if 0 <= val <= 255:
-                    pixel_values.append(val)
-                else:
-                    # print(f"警告: 像素值 {val} 超出范围，使用128")
-                    pixel_values.append(128)  # 沿用D3PM设置，解码失败则为灰像素
-            except ValueError:
+        try:
+            val = int(s_clean)
+            if 0 <= val <= 255:
+                pixel_values.append(val)
+            else:
                 pixel_values.append(128)  # 沿用D3PM设置，解码失败则为灰像素
-        else:
+        except ValueError:
             pixel_values.append(128)  # 沿用D3PM设置，解码失败则为灰像素
             
     # 转换为 Numpy 数组
@@ -172,8 +167,7 @@ def decompress_image(bit_string, model, tokenizer, args):
             reconstructed_patch = reconstructed_patch[:expected_len]
         else:
             reconstructed_patch = np.pad(reconstructed_patch, (0, expected_len - len(reconstructed_patch)), 'constant')
-            
-    # 重塑为 (h, w, C)
+    
     reconstructed_patch = reconstructed_patch.reshape(h, w, channels)
     
     return reconstructed_patch
@@ -240,8 +234,6 @@ def main(args):
         
         # 3. 逐行解压 (每一行是一个 patch 的比特流)
         print(f"开始解压，共 {len(lines)} 个 Patch...")
-        # 在循环读取 lines 时
-
         for line_idx, line in enumerate(tqdm(lines)):
             raw_bit_string = line.strip()
             if not raw_bit_string:
@@ -262,12 +254,6 @@ def main(args):
                 
             # 3. 解压单个 Patch
             patch = decompress_image(bit_string, model, tokenizer, args)
-            
-            # 保存 Patch 可视化结果 (可选)
-            # save_dir_patch = os.path.join(save_dir_reconstructed, 'patches')
-            # os.makedirs(save_dir_patch, exist_ok=True)
-            # patch_visualize(patch, save_dir_patch, line_idx)
-            
             current_patches.append(patch)
             
             # 当收集满一张图的所有 Patch 时进行重组
@@ -282,7 +268,6 @@ def main(args):
                 Image.fromarray(full_image).save(img_save_path)
                 print(f"图像已保存至: {img_save_path}")
                 
-                # 重置缓冲区
                 current_patches = []
                 image_idx += 1
                 
