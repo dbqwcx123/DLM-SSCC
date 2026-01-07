@@ -15,6 +15,8 @@
 
 """Defines project-wide constants."""
 
+BATCH_SIZE = 4
+
 NUM_IMAGE_TRAIN = 782
 NUM_IMAGE_VALID = 98
 NUM_IMAGE_TEST = 1
