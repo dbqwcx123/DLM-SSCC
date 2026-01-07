@@ -42,8 +42,7 @@ def compress_image(num_str_tokens, model, tokenizer, args):
     attention_mask = get_anneal_attn_mask(seq_len, batch_size, dtype=x_embed.dtype, device=device, attn_mask_ratio=1.0)
     
     # 如果保留 BOS 不压缩（作为 Prompt），则将第一个位置设为 False
-    if args.keep_bos:
-        maskable_mask[0, 0] = False
+    maskable_mask[0, 0] = False
     # 初始状态：所有位置都是[MASK]
     xt = x.masked_fill(maskable_mask, tokenizer.mask_token_id)
     
@@ -120,7 +119,6 @@ def compress_image(num_str_tokens, model, tokenizer, args):
             true_pixel_value = tokenid_to_pixel(true_pixel_id, tokenizer)
             
             # prob_dist = torch.softmax(logits_pixel[0, idx], dim=-1)
-            # prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
             # prob_dist = prob_dist.cpu().numpy()
             
             # 移动到 CPU 并转为 double 计算 Softmax，获取预测的概率分布
@@ -222,10 +220,7 @@ def get_args():
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-38000')
     parser.add_argument("--diffusion_steps", type=int, default=50)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-    # parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
-    # parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-    parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩(作为已知条件)")
     parser.add_argument("--dataset_type", type=str, default="DIV2K")
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")

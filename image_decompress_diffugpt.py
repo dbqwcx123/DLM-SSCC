@@ -28,7 +28,6 @@ def decompress_image(bit_string, model, tokenizer, args):
     pixel_token_ids = compute_pixel_token_ids(tokenizer)
     
     # 1. 确定序列参数
-    # 假设 constants 中定义了块的大小，例如 32x32
     h, w = constants.CHUNK_SHAPE_2D
     channels = 1 if constants.IS_CHANNEL_WISED else 3
     seq_len = h * w * channels + 1  # 序列长度 = 像素数 + BOS
@@ -44,9 +43,8 @@ def decompress_image(bit_string, model, tokenizer, args):
     attention_mask = get_anneal_attn_mask(seq_len, batch_size, dtype=torch.float32, device=device, attn_mask_ratio=1.0)
     
     # 设置 BOS Token
-    if args.keep_bos:
-        xt[0, 0] = tokenizer.bos_token_id
-        maskable_mask[0, 0] = False
+    xt[0, 0] = tokenizer.bos_token_id
+    maskable_mask[0, 0] = False
 
     # 3. 初始化算术解码器
     def _input_fn(bit_sequence=data_iter):
@@ -110,13 +108,12 @@ def decompress_image(bit_string, model, tokenizer, args):
             idx = idx.item()
             
             # prob_dist = torch.softmax(logits_pixel[0, idx], dim=-1)
-            # prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
             # prob_dist = prob_dist.cpu().numpy()
             
             # 移动到 CPU 并转为 double 计算 Softmax，获取预测的概率分布
             logits_fp64 = logits_pixel[0, idx].detach().cpu().double()
             prob_dist = torch.softmax(logits_fp64, dim=-1)
-            prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
+            # prob_dist = smooth_probs(prob_dist, k=args.smooth_k, alpha=args.smooth_alpha)
             prob_dist = prob_dist.numpy()
             
             try:
@@ -287,16 +284,13 @@ def get_args():
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-48000')
     parser.add_argument("--diffusion_steps", type=int, default=50)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
-    parser.add_argument("--smooth_k", type=int, default=0, help="概率平滑半径")
-    parser.add_argument("--smooth_alpha", type=float, default=0, help="概率平滑强度")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-    parser.add_argument("--keep_bos", type=bool, default=True, help="是否保留BOS不压缩")
     parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
     parser.add_argument("--dataset_type", type=str, default="DIV2K")
     parser.add_argument("--root_dir", type=str, default="./image_io", help="输入输出文件夹的根目录")
+    
     args = parser.parse_args()
     
-    # 根据解析后的 diffusion_steps 和 channel 动态设置默认路径
     args.model_path = os.path.join(args.model_path, args.model_name)
     if args.ddm_sft:
         args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)

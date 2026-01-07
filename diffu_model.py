@@ -117,10 +117,12 @@ def get_confidence_entropy(logits, mask_indices):
     
     # 计算熵: H(x) = - sum(p * log(p))
     entropy = -torch.sum(probs * log_probs, dim=-1) # [batch, seq_len]
-    selected_entropy = entropy[0, mask_indices]
+    # selected_entropy = entropy[0, mask_indices]
     
     # 返回负熵 (熵越小，置信度越大)
-    confidences = -selected_entropy
+    # confidences = -selected_entropy
+    confidences = -entropy
+    
     return confidences
 
 def get_confidence_topk(logits, mask_indices):
@@ -134,7 +136,9 @@ def get_confidence_topk(logits, mask_indices):
     topk_probs, _ = torch.topk(probs, k=k, dim=-1) # [batch, seq_len, k]
     mass_sum = torch.sum(topk_probs, dim=-1) # [batch, seq_len]
     
-    confidences = mass_sum[0, mask_indices]
+    # confidences = mass_sum[0, mask_indices]
+    confidences = mass_sum
+    
     return confidences
 
 def get_confidence_simple(logits, mask_indices):
@@ -146,7 +150,8 @@ def get_confidence_simple(logits, mask_indices):
     # logits: [batch, seq_len, vocab_size]
     probs = torch.softmax(logits, dim=-1)
     max_probs, _ = torch.max(probs, dim=-1) # [batch, seq_len]
-    confidences = max_probs[0, mask_indices]  # 提取掩码位置的置信度
+    # confidences = max_probs[0, mask_indices]
+    confidences = max_probs
     return confidences
 
 
@@ -248,7 +253,7 @@ def load_ddm(args):
     use_manual_loading = os.path.exists(bin_file) and not os.path.exists(os.path.join(model_name, "model.safetensors"))
     
     if use_manual_loading:
-        print(f"检测到 pytorch_model.bin 且无 safetensors，使用手动模式加载模型权重: {model_name}")
+        print(f"检测到 pytorch_model.bin 且无 safetensors，使用手动模式加载模型权重")
     
         if args.base_model_name in ['gpt2', 'gpt2-medium']:
             with torch.device('cuda'):
@@ -267,7 +272,7 @@ def load_ddm(args):
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         print(f"权重加载完成。丢失键: {len(missing)}, 多余键: {len(unexpected)}")
     else:
-        print(f"使用默认 from_pretrained 加载模型: {model_name}")
+        print(f"使用默认 from_pretrained 加载模型")
         if args.base_model_name in ['gpt2', 'gpt2-medium']:
             with torch.device('cuda'):
                 model = DiscreteDiffusionModel.from_pretrained(
