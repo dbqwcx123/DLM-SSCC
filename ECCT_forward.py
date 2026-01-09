@@ -17,49 +17,59 @@ import constants
 ##################################################################
 
 class My_Dataset(data.Dataset):
-    def __init__(self, message, code, sigma):
-        self.message = message
+    def __init__(self, message_list, code, sigma, channel_type):
+        """
+        1. 接收所有消息列表，统一进行预处理。
+        2. 预先计算编码(G矩阵乘法)，避免在GetItem中重复计算。
+        """
         self.code = code
         self.sigma = sigma
-        self.generator_matrix = code.generator_matrix.transpose(0, 1)
-        self.pc_matrix = code.pc_matrix.transpose(0, 1)
+        self.channel_type = channel_type
+        
+        # 预转换矩阵为 Float Tensor 以加速计算
+        self.generator_matrix = code.generator_matrix.transpose(0, 1).float()
+        self.pc_matrix = code.pc_matrix.transpose(0, 1).float()
+
+        # 数据展平与预编码
+        # 将所有消息合并处理，最大化 Batch 效率
+        all_m = []
+        for msg in message_list:
+            groups = split_message(msg, self.code.k)
+            all_m.extend(groups)
+        
+        # 转换为 Tensor (Total_Blocks, K)
+        self.m_tensor = torch.tensor(all_m, dtype=torch.float)
+        
+        # 预先进行信道编码 x = mG (Total_Blocks, N)
+        self.x_tensor = torch.matmul(self.m_tensor, self.generator_matrix) % 2
 
     def __getitem__(self, index):
-        num_groups, message_list = split_message(self.message, self.code.k)
-        m_list, x_list, z_list, y_list, magnitude_list, syndrome_list = [], [], [], [], [], []
+        """
+        只处理单个样本，Batch 组装交给 DataLoader
+        """
+        m = self.m_tensor[index]
+        x = self.x_tensor[index]
         
-        for i in range(num_groups):
-            single_msg = message_list[i]
-            
-            m = torch.tensor(single_msg).view(1, self.code.k)
-            x = torch.matmul(m, self.generator_matrix) % 2
-            
-            z = torch.randn(self.code.n) * self.sigma[0]
-            
-            if channel == 'AWGN':
-                h = 1
-            elif channel == 'Rayleigh':
-                h = torch.from_numpy(np.random.rayleigh(1, self.code.n)).float()
-            else:
-                raise ValueError("Invalid channel type.")
-            
-            y = h * bin_to_sign(x) + z
-            magnitude = torch.abs(y)
-            syndrome = torch.matmul(sign_to_bin(torch.sign(y)).long(),
-                                    self.pc_matrix) % 2
-            syndrome = bin_to_sign(syndrome)
-            
-            m_list.append(m.float())
-            x_list.append(x.float())
-            z_list.append(z.float())
-            y_list.append(y.float())
-            magnitude_list.append(magnitude.float())
-            syndrome_list.append(syndrome.float())
-            
-        return m_list, x_list, z_list, y_list, magnitude_list, syndrome_list
+        z = torch.randn(self.code.n) * self.sigma[0]
+        
+        if self.channel_type == 'AWGN':
+            h = 1.0
+        elif self.channel_type == 'Rayleigh':
+            h = torch.from_numpy(np.random.rayleigh(1, self.code.n)).float()
+        else:
+            raise ValueError("Invalid channel type.")
+        
+        y = h * bin_to_sign(x) + z
+        magnitude = torch.abs(y)
+        syndrome = torch.matmul(sign_to_bin(torch.sign(y)).long().float(),
+                                self.pc_matrix) % 2
+        syndrome = bin_to_sign(syndrome)
+        
+        return m, x, z, y, magnitude, syndrome
 
     def __len__(self):
-        return 1
+        return len(self.m_tensor)
+
 
 ##################################################################
 
@@ -69,6 +79,7 @@ def read_message_from_txt(filename):
     with open(filename, 'r') as f:
         message_string_list = f.read().splitlines()
         for message_string in message_string_list:
+            if not message_string.strip(): continue # 跳过空行
             message = [int(x) for x in message_string]
             message_list.append(message)
     
@@ -90,101 +101,87 @@ def split_message(message, k):
         if len(group) < k:
             group.extend([0] * (k - len(group)))
         result.append(group)
-    return num_groups, result
+    return result  # num_groups=len(result)
 
-def extract_information_bits(codeword_list, K, N):
-    """从码字中提取信息比特"""
-    extracted_messages = []
+def reconstruct_lines(all_pred_bits, message_list, code):
+    """
+    将扁平化的预测比特流恢复为原始的多行格式
+    """
+    reconstructed_lines = []
+    bit_pointer = 0
+    N, K = code.n, code.k
     
-    for bitstream in codeword_list:
-        decoded_bitstream = ""
-        # 按码字长度分段处理
-        for i in range(0, len(bitstream), N):
-            segment = bitstream[i:i+N]
-            if len(segment) < N:
-                # 处理不完整的段
-                segment = segment + [0] * (N - len(segment))
-            
-            # 提取前K个信息比特
-            m = segment[:K]
-            decoded_segment = "".join(map(str, m))
-            decoded_bitstream += decoded_segment
+    # 遍历原始消息列表，利用其长度信息进行切分
+    for original_msg in message_list:
+        # 1. 计算当前这行消息原本占用了多少个 Block
+        msg_len = len(original_msg)
+        num_blocks = (msg_len + K - 1) // K
         
-        # 去除末尾的填充零
-        decoded_bitstream = decoded_bitstream.rstrip('0')
-        extracted_messages.append(decoded_bitstream)
-    
-    return extracted_messages
+        # 2. 从长流中切出属于这一行的片段
+        # chunk 是 N * num_blocks 长度的列表
+        chunk = all_pred_bits[bit_pointer : bit_pointer + num_blocks * N]
+        bit_pointer += num_blocks * N
+        
+        # 3. 解码：从每个 N 长的码字中提取前 K 个信息位
+        current_line_str = ""
+        for i in range(0, len(chunk), code.n):
+            block = chunk[i : i + code.n]
+            # 提取信息位 (假设是系统码，前K位是信息)
+            info_bits = block[:code.k]
+            current_line_str += "".join(map(str, info_bits))
+            
+        # 4. 去除末尾的填充0
+        current_line_str = current_line_str.rstrip('0')            
+        reconstructed_lines.append(current_line_str)
+        
+    return reconstructed_lines
 
 ##################################################################
 
-def estimate(model, device, dataloader_list, SNR_range_test, code):
-    """估计性能并提取信息（整合了估计和信息提取功能）"""
+def estimate(model, device, test_loader, code):
+    """
+    1. DataLoader 利用 Batch 进行推理。
+    2. 使用 GPU 批量计算 Loss 和 Metric。
+    """
     model.eval()
-    test_loss_noise_ber, test_loss_list, test_loss_ber_list, test_loss_fer_list = [], [], [], []
-    cum_samples_all = []
     
-    t = time.time()
+    total_loss = 0.
+    total_ber = 0.
+    total_fer = 0.
+    total_samples = 0 # 统计实际的 Block 数量
+    
+    all_x_pred_bits = []  # 收集所有预测的比特
+    
     with torch.no_grad():
-        for ii, test_loader in enumerate(dataloader_list):
-            (m_list, x_list, z_list, y_list, magnitude_list, syndrome_list) = next(iter(test_loader))
+        for (m, x, z, y, magnitude, syndrome) in tqdm(test_loader, desc="Inference", leave=False):
+            m, x, z, y = m.to(device), x.to(device), z.to(device), y.to(device)
+            magnitude, syndrome = magnitude.to(device), syndrome.to(device)
             
-            noise_ber = test_loss = test_ber = test_fer = cum_count = 0.
-            x_pred_list = []
-            all_x_pred_bits = []  # 收集所有预测的比特
+            # 前向传播 (Batch处理)
+            z_pred = model(magnitude, syndrome)
             
-            for jj in range(len(m_list)):
-                m, x, z, y, magnitude, syndrome = m_list[jj], x_list[jj], z_list[jj], y_list[jj], magnitude_list[jj], syndrome_list[jj]
-                noise_ber += BER((y<=0).float(), x)
-                z_mul = (y * bin_to_sign(x))
-                
-                z_pred = model(magnitude.to(device), syndrome.to(device))
-                loss, x_pred = model.loss(z_pred, z_mul.to(device), y.to(device))
+            # 计算 Loss
+            z_mul = (y * bin_to_sign(x))
+            loss, x_pred = model.loss(z_pred, z_mul, y)
 
-                test_loss += loss.item() * x.shape[0]
-                test_ber += BER(x_pred, x.to(device)) * x.shape[0]
-                test_fer += FER(x_pred, x.to(device)) * x.shape[0]
-                cum_count += x.shape[0]
-                
-                # 收集预测结果
-                x_pred_np = x_pred.squeeze(0).cpu().numpy().astype(int)
-                x_pred_list.append(x_pred_np)
-                all_x_pred_bits.extend(x_pred_np.flatten().tolist())
+            # 统计指标
+            batch_size = x.shape[0]
+            total_loss += loss.item() * batch_size
+            total_ber += BER(x_pred, x) * batch_size
+            total_fer += FER(x_pred, x) * batch_size
+            total_samples += batch_size
             
-            # 保存性能指标
-            cum_samples_all.append(cum_count)
-            test_loss_noise_ber.append(noise_ber / cum_count)
-            test_loss_list.append(test_loss / cum_count)
-            test_loss_ber_list.append(test_ber / cum_count)
-            test_loss_fer_list.append(test_fer / cum_count)
+            # 收集预测结果
+            # x_pred shape: (Batch, N)
+            x_pred_np = x_pred.cpu().numpy().astype(int)
+            all_x_pred_bits.extend(x_pred_np.flatten().tolist())
             
-            # 直接提取信息比特并保存
-            extracted_messages = extract_information_bits([all_x_pred_bits], code.k, code.n)
-            
-            # 保存提取后的信息
-            output_extracted_filename = f'./image_io/{mode}/diffu_step{diffu_step}/ECCT_forward/{code.code_name}/{channel}/demo_decode_SNR_{SNR_range_test[ii]}.txt'
-            os.makedirs(os.path.dirname(output_extracted_filename), exist_ok=True)
-            with open(output_extracted_filename, 'a') as f:
-                for msg in extracted_messages:
-                    f.write(msg + "\n")
-            
-            # 原始预测结果
-            # output_pred_filename = f'./image_io/{mode}/ECCT_pred/{code.code_name}/{channel}/demo_decode_SNR_{SNR_range_test[ii]}.txt'
-            # os.makedirs(os.path.dirname(output_pred_filename), exist_ok=True)
-            # with open(output_pred_filename, 'a') as f:
-            #     combined_x_pred = np.concatenate(x_pred_list)
-            #     f.write("".join(map(str, combined_x_pred)) + "\n")
-        
-        # 打印性能结果
-        # print('\nNoise BER ' + ' '.join(
-        #     ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_noise_ber, SNR_range_test)]))
-        print('Test BER ' + ' '.join(
-            ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_ber_list, SNR_range_test)]))
-        # print('Test FER ' + ' '.join(
-        #     ['{}: {:.2e}'.format(snr, elem) for (elem, snr) in zip(test_loss_fer_list, SNR_range_test)]))
+    # 计算平均值
+    avg_loss = total_loss / total_samples
+    avg_ber = total_ber / total_samples
+    avg_fer = total_fer / total_samples
     
-    # print(f'Test Time {time.time() - t:.2f} s\n')
-    return test_loss_list, test_loss_ber_list, test_loss_fer_list
+    return avg_loss, avg_ber, avg_fer, all_x_pred_bits
 
 ##################################################################
 
@@ -219,18 +216,17 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 加载模型
-    if args.isParallel:
-        model = torch.load(os.path.join(args.model_path, 'best_model'), map_location='cpu')
+    model = torch.load(os.path.join(args.model_path, 'best_model'), map_location='cpu')
+    if hasattr(model, 'module'):
         model = model.module.to(device)
     else:
-        model = torch.load(os.path.join(args.model_path, 'best_model'))
         model.to(device)
     
     print(f'Transmission channel type: {args.channel}')
     
-    # SNR范围设置
-    SNR_range_test = np.arange(-3, 7)
-    ## TODO: 这里需要根据baseline调整SNR范围
+    # SNR 范围设置
+    SNR_range_test = np.arange(-3,13,3)
+    ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
     codeword_len_unified = _out_channel * (constants.IMAGE_SHAPE[0]//4) * (constants.IMAGE_SHAPE[1]//4) * _float_base * constants.NUM_IMAGE_TEST
@@ -240,39 +236,55 @@ def main(args):
     print(f'SNR_range_test: {SNR_range_test_real}')
     
     std_test = [SNR_to_std(ii) for ii in SNR_range_test_real]
-    print(f'std_test: {std_test}')
     
-    # 性能评估
-    test_loss_sum, test_loss_ber_sum, test_loss_fer_sum = [0] * len(std_test), [0] * len(std_test), [0] * len(std_test)
-    
-    for message in tqdm(message_list):
-        dataloader_list = [My_Dataset(message, code, sigma=[std_test[ii]]) for ii in range(len(std_test))]
-        test_loss_list, test_loss_ber_list, test_loss_fer_list = estimate(
-            model, device, dataloader_list, SNR_range_test, code)
+    final_loss, final_ber, final_fer = [], [], []
+    # 对每个 SNR 进行测试
+    for ii, snr_val in enumerate(SNR_range_test_real):
+        print(f"\n--- Testing SNR Index {ii}: {SNR_range_test[ii]} dB (Real: {snr_val:.2f} dB) ---")
         
-        test_loss_sum = [x + y for x, y in zip(test_loss_list, test_loss_sum)]
-        test_loss_ber_sum = [x + y for x, y in zip(test_loss_ber_list, test_loss_ber_sum)]
-        test_loss_fer_sum = [x + y for x, y in zip(test_loss_fer_list, test_loss_fer_sum)]
-    
-    # 计算平均性能指标
-    test_loss_avg = [x / len(message_list) for x in test_loss_sum]
-    test_loss_ber_avg = [x / len(message_list) for x in test_loss_ber_sum]
-    test_loss_fer_avg = [x / len(message_list) for x in test_loss_fer_sum]
-    
-    # 保存性能指标
+        # 1. 创建 Dataset（包含所有消息）和 DataLoader
+        test_dataset = My_Dataset(message_list, code, sigma=[std_test[ii]], channel_type=args.channel)
+        test_loader = data.DataLoader(
+            test_dataset, 
+            batch_size=args.test_batch_size, 
+            shuffle=False, 
+            num_workers=args.workers, 
+            pin_memory=True
+        )
+        
+        # 2. 执行推理 (获得扁平化的结果 all_pred_bits)
+        loss, ber, fer, all_pred_bits = estimate(model, device, test_loader, code)
+        
+        final_loss.append(loss)
+        final_ber.append(ber)
+        final_fer.append(fer)
+        
+        print(f"Result -> BER: {ber:.4e} | FER: {fer:.4e} | Loss: {loss:.4f}")
+        
+        # 3. 保存解码后的信息流并恢复多行结构
+        recovered_lines = reconstruct_lines(all_pred_bits, message_list, code)
+        
+        output_extracted_filename = f'./image_io/{mode}/diffu_step{diffu_step}/ECCT_forward/{code.code_name}/{channel}/demo_decode_SNR_{SNR_range_test[ii]}.txt'
+        os.makedirs(os.path.dirname(output_extracted_filename), exist_ok=True)
+        
+        # 写入文件：现在 recovered_lines 的长度应该和 message_list 一样
+        with open(output_extracted_filename, 'w') as f:
+            for line in recovered_lines:
+                f.write(line + "\n")
+                
     metric_filename = f'./image_io/{mode}/diffu_step{diffu_step}/ECCT_forward/{code.code_name}/{channel}/#demo_decode_metric.txt'
     os.makedirs(os.path.dirname(metric_filename), exist_ok=True)
-    with open(metric_filename, "a") as f:
-        f.write("\nloss:\n"+ ", ".join([f"{x:.8e}" for x in test_loss_avg]))
-        f.write("\nBER:\n"+ ", ".join([f"{x:.8e}" for x in test_loss_ber_avg]))
-        f.write("\nFER:\n"+ ", ".join([f"{x:.8e}" for x in test_loss_fer_avg]))
+    with open(metric_filename, "w") as f:
+        f.write("loss:\n"+ ", ".join([f"{x:.8e}" for x in final_loss]))
+        f.write("\nBER:\n"+ ", ".join([f"{x:.8e}" for x in final_ber]))
+        f.write("\nFER:\n"+ ", ".join([f"{x:.8e}" for x in final_fer]))
         
-    print(f"Testing completed. Results save to {args.mode}")
+    print(f"\nTesting completed. Results saved to ./image_io/{mode}/...")
 
 ##################################################################
 def get_args():
     parser = argparse.ArgumentParser(description='PyTorch ECCT')
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--gpus', type=str, default="0", help='gpus ids')
     parser.add_argument('--test_batch_size', type=int, default=2048)
 
@@ -284,8 +296,8 @@ def get_args():
     parser.add_argument('--code_k', type=int, default=24)
     parser.add_argument('--code_n', type=int, default=49)
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='DIV2K/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-m_ddm-sft/train_20260103_162805')
-    parser.add_argument('--diffu_step', type=int, default=50)
+    parser.add_argument('--mode', type=str, default='DIV2K/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
+    parser.add_argument('--diffu_step', type=int, default=20)
 
     # Model args
     parser.add_argument('--isParallel', type=bool, default=True)
