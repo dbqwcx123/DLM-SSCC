@@ -171,3 +171,5 @@ wandb/
 image_io/
 *.png
 *.csv
+
+Model_test/
