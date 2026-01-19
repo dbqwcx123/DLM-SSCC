@@ -125,7 +125,8 @@ def compress_image(batch_pixel_arrays, model, tokenizer, ctx, args):
     with torch.inference_mode():
         for t in range(args.diffusion_steps-1, -1, -1):
             # 1. GPU 推理
-            with torch.cuda.amp.autocast(enabled=True):
+            # with torch.cuda.amp.autocast(enabled=True):  # 混合精度
+            with torch.no_grad():
                 raw_logits = model(xt, attention_mask=attention_mask)
             
             # 2. Logits 处理
@@ -142,47 +143,125 @@ def compress_image(batch_pixel_arrays, model, tokenizer, ctx, args):
             
             confidences = confidences.masked_fill(~maskable_mask, float('-inf'))
             
-            num_current_masks = torch.sum(maskable_mask, dim=1).max().item()
+            # -----------------------------------------------------------------------------
+            # 计算每个样本实际剩余的 mask 数量 [B]
+            masks_left_per_sample = torch.sum(maskable_mask, dim=1) 
+            num_current_masks = masks_left_per_sample.max().item()
             if num_current_masks == 0: break
             
             ratio = 1.0 / (t + 1)
             k = max(1, min(int(num_current_masks * ratio), num_current_masks))
             
-            # 稳定排序策略
-            # 当 confidences 中有相同值时，stable=True 保证保留原始索引顺序(即优先选前面的)
-            _, sorted_indices = torch.sort(confidences, descending=True, stable=True)
+            # 排序获取 indices [B, K]
+            sorted_indices = batch_stable_sort(confidences)
             target_indices = sorted_indices[:, :k]
             
             # 4. 提取数据
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
-            target_probs = torch.softmax(target_logits.float(), dim=-1)
-            
+            target_probs = torch.softmax(target_logits.double(), dim=-1)
             true_token_ids = torch.gather(x, 1, target_indices)
             
-            # 5. 更新输入 xt
-            xt.scatter_(1, target_indices, true_token_ids)
-            false_tensor = torch.zeros_like(true_token_ids, dtype=torch.bool)
-            maskable_mask.scatter_(1, target_indices, false_tensor)
+            # 5. 更新输入 xt (仅 GPU 更新部分，先不急着 scatter)
+            # 我们需要构建一个 mask，只更新那些实际上还有 mask 的位置
+            # 如果某个样本只剩 2 个 mask，但在 k=10 的循环里，后 8 个 indices 是无效的
+            
+            # 构建有效性 Mask [B, K]
+            # 这里的逻辑是：如果当前列索引 i < 该样本剩余 mask 数，则有效
+            arange_k = torch.arange(k, device=device).unsqueeze(0).expand(batch_size, -1)
+            masks_left_expanded = masks_left_per_sample.unsqueeze(1).expand(-1, k)
+            valid_k_mask = arange_k < masks_left_expanded  # [B, K] bool
+
+            # 仅在有效位置更新 xt
+            # 使用 view(-1) 展平处理来避免复杂的 gather/scatter 逻辑
+            flat_indices = target_indices.reshape(-1)
+            flat_src = true_token_ids.reshape(-1)
+            flat_mask = valid_k_mask.reshape(-1)
+            
+            # 只有 valid 的位置才进行 scatter 更新
+            # xt.scatter_ 无法直接接受 mask，所以我们用 tensor 索引操作
+            # 展平后的 xt 索引
+            batch_offsets = torch.arange(batch_size, device=device) * xt.size(1)
+            batch_offsets = batch_offsets.unsqueeze(1).expand(-1, k).reshape(-1)
+            final_flat_indices = batch_offsets + flat_indices
+            
+            # 执行更新：只更新 valid_k_mask 为 True 的部分
+            xt.view(-1)[final_flat_indices[flat_mask]] = flat_src[flat_mask]
+            
+            # 更新 maskable_mask (设为 False)
+            maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
             
             # 6. 数据传回 CPU
             target_probs_cpu = target_probs.cpu().numpy()
             true_pixel_vals_gpu = torch.gather(ctx.id_to_pixel_tensor, 0, true_token_ids.view(-1)).view(batch_size, k)
             true_pixel_vals_cpu = true_pixel_vals_gpu.cpu().numpy()
             
+            # 传递到 CPU 的剩余数量
+            masks_left_cpu = masks_left_per_sample.cpu().numpy()
+
             profiler.end_tick()
             profiler.tick("Arithmetic Coding (CPU)")
             
-            # 串行编码
+            # 串行编码 (加入有效性判断)
             for b in range(batch_size):
                 enc = encoders[b]
                 p_b = target_probs_cpu[b]
                 pix_b = true_pixel_vals_cpu[b]
-                for i in range(k):
+                
+                # 【关键修复】：取 k 和 实际剩余数量 的最小值
+                actual_k = min(k, int(masks_left_cpu[b]))
+                
+                for i in range(actual_k):
                     enc.encode(normalize_pdf_for_arithmetic_coding(p_b[i]), int(pix_b[i]))
             
             profiler.end_tick()
             profiler.tick("Model Inference (GPU)")
+            
+            # # -----------------------------------------------------------------------------
+            # num_current_masks = torch.sum(maskable_mask, dim=1).max().item()
+            # if num_current_masks == 0: break
+            
+            # ratio = 1.0 / (t + 1)
+            # k = max(1, min(int(num_current_masks * ratio), num_current_masks))
+            
+            # # 稳定排序策略
+            # # 当 confidences 中有相同值时，stable=True 保证保留原始索引顺序(即优先选前面的)
+            # # _, sorted_indices = torch.sort(confidences, descending=True, stable=True)
+            # sorted_indices = batch_stable_sort(confidences)
+            # target_indices = sorted_indices[:, :k]
+            
+            # # 4. 提取数据
+            # batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
+            # target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
+            # # target_logits = target_logits.detach().cpu().double()
+            # target_probs = torch.softmax(target_logits.double(), dim=-1)
+            
+            # true_token_ids = torch.gather(x, 1, target_indices)
+            
+            # # 5. 更新输入 xt
+            # xt.scatter_(1, target_indices, true_token_ids)
+            # false_tensor = torch.zeros_like(true_token_ids, dtype=torch.bool)
+            # maskable_mask.scatter_(1, target_indices, false_tensor)
+            
+            # # 6. 数据传回 CPU
+            # target_probs_cpu = target_probs.cpu().numpy()
+            # true_pixel_vals_gpu = torch.gather(ctx.id_to_pixel_tensor, 0, true_token_ids.view(-1)).view(batch_size, k)
+            # true_pixel_vals_cpu = true_pixel_vals_gpu.cpu().numpy()
+            
+            # profiler.end_tick()
+            # profiler.tick("Arithmetic Coding (CPU)")
+            
+            # # 串行编码
+            # for b in range(batch_size):
+            #     enc = encoders[b]
+            #     p_b = target_probs_cpu[b]
+            #     pix_b = true_pixel_vals_cpu[b]
+            #     for i in range(k):
+            #         enc.encode(normalize_pdf_for_arithmetic_coding(p_b[i]), int(pix_b[i]))
+            
+            # profiler.end_tick()
+            # profiler.tick("Model Inference (GPU)")
+            # # -----------------------------------------------------------------------------
 
     profiler.tick("Finalize")
     final_bits_list = []
@@ -275,16 +354,16 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2-medium', choices=['gpt2', 'gpt2-medium', 'llama'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
-    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20260107_234107')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-44000')
     parser.add_argument("--diffusion_steps", type=int, default=20)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'])
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-    parser.add_argument("--dataset_type", type=str, default="DIV2K")
+    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_test")
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args()
@@ -295,10 +374,24 @@ def get_args():
     
     if args.dataset_type == "CIFAR10":
         args.input_path = os.path.join(args.input_path, "CIFAR10", "cifar10_test")
-    elif args.dataset_type == "DIV2K":
-        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test")
+        # constants.IMAGE_SHAPE_TEST = (32, 32, 3)
+    elif args.dataset_type == "DIV2K_HR":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_HR_test")
+        # constants.NUM_IMAGE_TEST = 1
+        # constants.IMAGE_SHAPE_TEST = (1024, 1024, 3)
+    elif args.dataset_type == "DIV2K_LR_X2":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/X2")
+        # constants.IMAGE_SHAPE_TEST = (512, 512, 3)
+    elif args.dataset_type == "DIV2K_LR_X4":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/X4")
+        # constants.IMAGE_SHAPE_TEST = (256, 256, 3)
+    elif args.dataset_type == "DIV2K_LR_test":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/test")
+        # constants.NUM_IMAGE_TEST = 1
+        # constants.IMAGE_SHAPE_TEST = (256, 256, 3)
     elif args.dataset_type == "ImageNet":
         args.input_path = os.path.join(args.input_path, "ImageNet", "test_unified")
+        # constants.IMAGE_SHAPE_TEST = (256, 256, 3)
     
     args.output_path = os.path.join(args.output_path, f'{args.dataset_type}', f'{args.confidence_st}_confidence')
     args.output_path = os.path.join(args.output_path, 'channel_indep') if constants.IS_CHANNEL_WISED else os.path.join(args.output_path, 'channel_corre')

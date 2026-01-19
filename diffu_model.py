@@ -176,6 +176,45 @@ def conf_based_sorting(conf, mask_indices, device):
     return sorted_mask_pos
 
 
+def batch_stable_sort(confidences_tensor):
+    """
+    替代 torch.sort。
+    将 Batch 的置信度移至 CPU，转为 float64，并执行严格的稳定排序。
+    Args:
+        confidences_tensor: [Batch, Seq_Len] (GPU Tensor)
+    Returns:
+        sorted_indices: [Batch, Seq_Len] (GPU Tensor)
+    """
+    batch_size, seq_len = confidences_tensor.shape
+    device = confidences_tensor.device
+    
+    # 1. 转移到 CPU 并转为 float64 以获得最大精度
+    # numpy 处理 float64 比 tensor 转 list 更快一点
+    conf_cpu = confidences_tensor.detach().cpu().double().numpy()
+    
+    sorted_indices_list = []
+    
+    # 2. 逐样本进行 Python 稳定排序
+    for b in range(batch_size):
+        row_conf = conf_cpu[b]
+        # 构建 (confidence, index) 对
+        combined = []
+        for i in range(seq_len):
+            combined.append((row_conf[i], i))
+            
+        # 排序规则：
+        # 1. Confidence 降序 (-x[0])
+        # 2. Index 升序 (x[1]) -> 这就是 Tie-breaker
+        combined.sort(key=lambda x: (-x[0], x[1]))
+        
+        # 提取排序后的索引
+        indices = [item[1] for item in combined]
+        sorted_indices_list.append(indices)
+        
+    # 3. 转回 GPU
+    return torch.tensor(sorted_indices_list, dtype=torch.long, device=device)
+
+
 def shift_logits(logits):
     """
     DiffuLLaMA/DiffuGPT 的核心移位操作。

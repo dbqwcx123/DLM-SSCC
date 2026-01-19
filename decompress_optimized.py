@@ -140,7 +140,8 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
         for t in range(args.diffusion_steps-1, -1, -1):
             
             # 1. GPU 推理
-            with torch.cuda.amp.autocast(enabled=True):
+            # with torch.cuda.amp.autocast(enabled=True):  # 混合精度
+            with torch.no_grad():
                 raw_logits = model(xt, attention_mask=attention_mask)
             
             # 2. Logits 处理 & Shift
@@ -158,24 +159,26 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             # 仅关注还未解码的位置 (maskable_mask 为 True 的位置)
             confidences = confidences.masked_fill(~maskable_mask, float('-inf'))
             
-            # 计算当前步需要解码的 token 数量 k
-            num_current_masks = torch.sum(maskable_mask, dim=1).max().item()
+            # -----------------------------------------------------------------------------
+            # 计算每个样本实际剩余的 mask 数量 [B]
+            masks_left_per_sample = torch.sum(maskable_mask, dim=1)
+            num_current_masks = masks_left_per_sample.max().item()
             if num_current_masks == 0: break
             
             ratio = 1.0 / (t + 1)
             k = max(1, min(int(num_current_masks * ratio), num_current_masks))
             
-            # 4. 使用稳定排序策略获取解码位置
-            _, sorted_indices = torch.sort(confidences, descending=True, stable=True)
+            # 排序
+            sorted_indices = batch_stable_sort(confidences)
             target_indices = sorted_indices[:, :k]
             
-            # 5. 提取这些位置的概率分布
+            # 提取概率
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
-            target_probs = torch.softmax(target_logits.float(), dim=-1) # [B, K, 256]
+            target_probs = torch.softmax(target_logits.double(), dim=-1) 
             
-            # 6. 数据回传 CPU 进行解码
             target_probs_cpu = target_probs.cpu().numpy()
+            masks_left_cpu = masks_left_per_sample.cpu().numpy()
             
             profiler.end_tick()
             profiler.tick("Arithmetic Decoding (CPU)")
@@ -185,26 +188,106 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             # 串行解码 (Batch内循环)
             for b in range(batch_size):
                 dec = decoders[b]
-                p_b = target_probs_cpu[b] # [K, 256]
-                for i in range(k):
-                    # 解码得到像素值 (0-255)
-                    pixel_val = dec.decode(normalize_pdf_for_arithmetic_coding(p_b[i]))
+                p_b = target_probs_cpu[b] 
+                
+                # 【关键修复】：只解码实际需要的数量
+                actual_k = min(k, int(masks_left_cpu[b]))
+                
+                for i in range(actual_k):
+                    try:
+                        pixel_val = dec.decode(normalize_pdf_for_arithmetic_coding(p_b[i]))
+                        # ... (越界检查代码不变)
+                    except Exception as e:
+                        # ... (错误处理不变)
+                        pixel_val = 128
                     decoded_pixel_values[b, i] = pixel_val
             
             profiler.end_tick()
             profiler.tick("Model Inference (GPU)")
             
             # 7. 更新状态 (GPU)
-            # 将解码出的像素值转回 Token ID
             decoded_pixels_tensor = torch.tensor(decoded_pixel_values, device=device, dtype=torch.long)
             decoded_token_ids = ctx.pixel_to_token_tensor[decoded_pixels_tensor] # [B, K]
             
-            # 填入 xt
-            xt.scatter_(1, target_indices, decoded_token_ids)
+            # 【关键修复】：构建有效性 Mask 并只更新有效位置
+            arange_k = torch.arange(k, device=device).unsqueeze(0).expand(batch_size, -1)
+            masks_left_expanded = masks_left_per_sample.unsqueeze(1).expand(-1, k)
+            valid_k_mask = arange_k < masks_left_expanded # [B, K]
             
-            # 更新 Mask (将已解码位置设为 False)
-            false_tensor = torch.zeros_like(decoded_token_ids, dtype=torch.bool)
-            maskable_mask.scatter_(1, target_indices, false_tensor)
+            # 展平准备 Scatter
+            flat_indices = target_indices.reshape(-1)
+            flat_src = decoded_token_ids.reshape(-1)
+            flat_mask = valid_k_mask.reshape(-1)
+            
+            # 计算在整个 xt (flattened) 中的绝对索引
+            batch_offsets = torch.arange(batch_size, device=device) * xt.size(1)
+            batch_offsets = batch_offsets.unsqueeze(1).expand(-1, k).reshape(-1)
+            final_flat_indices = batch_offsets + flat_indices
+            
+            # 只更新 valid 的部分！
+            # 如果不加这个 mask，decoded_pixel_values 里的 0 (初始值) 会覆盖掉那些
+            # 本来已经解码完成（但因为 batch 同步被强制选中的）像素。
+            xt.view(-1)[final_flat_indices[flat_mask]] = flat_src[flat_mask]
+            
+            # 更新 Mask
+            maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
+            
+            # # -----------------------------------------------------------------------------
+            # # 计算当前步需要解码的 token 数量 k
+            # num_current_masks = torch.sum(maskable_mask, dim=1).max().item()
+            # if num_current_masks == 0: break
+            
+            # ratio = 1.0 / (t + 1)
+            # k = max(1, min(int(num_current_masks * ratio), num_current_masks))
+            
+            # # 4. 使用稳定排序策略获取解码位置
+            # # _, sorted_indices = torch.sort(confidences, descending=True, stable=True)
+            # sorted_indices = batch_stable_sort(confidences)
+            # target_indices = sorted_indices[:, :k]
+            
+            # # 5. 提取这些位置的概率分布
+            # batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
+            # target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
+            # target_probs = torch.softmax(target_logits.double(), dim=-1) # [B, K, 256]
+            
+            # # 6. 数据回传 CPU 进行解码
+            # target_probs_cpu = target_probs.cpu().numpy()
+            
+            # profiler.end_tick()
+            # profiler.tick("Arithmetic Decoding (CPU)")
+            
+            # decoded_pixel_values = np.zeros((batch_size, k), dtype=np.int64)
+            
+            # # 串行解码 (Batch内循环)
+            # for b in range(batch_size):
+            #     dec = decoders[b]
+            #     p_b = target_probs_cpu[b] # [K, 256]
+            #     for i in range(k):
+            #         try:
+            #             pixel_val = dec.decode(normalize_pdf_for_arithmetic_coding(p_b[i]))
+            #             if not (0<=pixel_val<256):
+            #                 print(f"警告: 解码出错，像素值 {pixel_val} 越界，强制设为128")
+            #                 pixel_val = 128  # 沿用D3PM设置，解码失败则为灰像素
+            #         except Exception as e:
+            #             print(f"错误: Batch {b} 第 {i} 个像素解码失败，设为128，错误信息: {e}")
+            #             pixel_val = 128  # 沿用D3PM设置，解码失败则为灰像素
+            #         decoded_pixel_values[b, i] = pixel_val
+            
+            # profiler.end_tick()
+            # profiler.tick("Model Inference (GPU)")
+            
+            # # 7. 更新状态 (GPU)
+            # # 将解码出的像素值转回 Token ID
+            # decoded_pixels_tensor = torch.tensor(decoded_pixel_values, device=device, dtype=torch.long)
+            # decoded_token_ids = ctx.pixel_to_token_tensor[decoded_pixels_tensor] # [B, K]
+            
+            # # 填入 xt
+            # xt.scatter_(1, target_indices, decoded_token_ids)
+            
+            # # 更新 Mask (将已解码位置设为 False)
+            # false_tensor = torch.zeros_like(decoded_token_ids, dtype=torch.bool)
+            # maskable_mask.scatter_(1, target_indices, false_tensor)
+            # # --------------------------------------------------------------------------------
 
     profiler.tick("Finalize")
     
@@ -289,18 +372,18 @@ def main(args):
         print(f"错误: 文件 {args.input_dir} 不存在，请先运行压缩脚本。")
         return
     
-    # ## channel = AWGN/Rayleigh
-    # for SNR in range(6, -4, -1):
-    #     print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
-    #     args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
-    #     save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
-    #     os.makedirs(save_dir_reconstructed, exist_ok=True)
+    # channel = AWGN/Rayleigh
+    for SNR in range(12, -4, -3):
+        print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
+        args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
+        save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
     
-    # channel = None
-    for SNR in [0]:
-        args.input_file = args.input_dir + '/compressed_output.txt'
-        save_dir_reconstructed = args.output_dir
+    # # channel = None
+    # for SNR in [0]:
+    #     args.input_file = args.input_dir + '/compressed_output.txt'
+    #     save_dir_reconstructed = os.path.join(args.output_dir, 'recon_clean')
         
+        os.makedirs(save_dir_reconstructed, exist_ok=True)
         print(f"正在读取压缩文件: {args.input_file}")
         with open(args.input_file, 'r') as f:
             lines = f.readlines()
@@ -315,7 +398,7 @@ def main(args):
         batch_buffer = []
         current_patches = []
         image_idx = 0
-        patches_per_image = constants.PATCHES_PER_IMAGE
+        patches_per_image = constants.PATCHES_PER_IMAGE_TEST
         
         for i, line in enumerate(tqdm(lines)):
             raw_bit_string = line.strip()
@@ -343,13 +426,14 @@ def main(args):
                     img_patches = current_patches[:patches_per_image]
                     current_patches = current_patches[patches_per_image:]
                     
-                    full_image = reconstruct_image_from_patches(img_patches, constants.IMAGE_SHAPE)
+                    full_image = reconstruct_image_from_patches(img_patches, constants.IMAGE_SHAPE_TEST)
                     
                     img_save_path = os.path.join(save_dir_reconstructed, f'image_{image_idx}.png')
                     if full_image.shape[2] == 1: # Grayscale
                         Image.fromarray(full_image[:, :, 0], mode='L').save(img_save_path)
                     else:
                         Image.fromarray(full_image, mode='RGB').save(img_save_path)
+                    print(f"保存图像: {img_save_path}")
                     image_idx += 1
                 
                 if i % (constants.BATCH_SIZE * 5) == 0 and args.verbose:
@@ -364,13 +448,14 @@ def main(args):
                 img_patches = current_patches[:patches_per_image]
                 current_patches = current_patches[patches_per_image:]
                 
-                full_image = reconstruct_image_from_patches(img_patches, constants.IMAGE_SHAPE)
+                full_image = reconstruct_image_from_patches(img_patches, constants.IMAGE_SHAPE_TEST)
                 
                 img_save_path = os.path.join(save_dir_reconstructed, f'image_{image_idx}.png')
                 if full_image.shape[2] == 1:
                     Image.fromarray(full_image[:, :, 0], mode='L').save(img_save_path)
                 else:
                     Image.fromarray(full_image, mode='RGB').save(img_save_path)
+                print(f"保存图像: {img_save_path}")
                 image_idx += 1
             
         end_time_total = time.time()
@@ -386,13 +471,13 @@ def get_args():
     parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
-    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20251228_192149')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-48000')
     parser.add_argument("--diffusion_steps", type=int, default=20)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'])
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-    parser.add_argument("--channel", type=str, default=None, choices=[None, 'AWGN', 'Rayleigh'])
-    parser.add_argument("--dataset_type", type=str, default="DIV2K")
+    parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
+    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4")
     parser.add_argument("--root_dir", type=str, default="./image_io", help="输入输出文件夹的根目录")
     
     args = parser.parse_args()
@@ -405,7 +490,7 @@ def get_args():
     if args.ddm_sft:
         args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
     else:
-        args.root_dir = os.path.join(args.outpuroot_dirt_path, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
+        args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
     
     if args.channel:
         args.input_dir  = os.path.join(args.root_dir, f"ECCT_forward/LDPC_K24_N49/{args.channel}")
