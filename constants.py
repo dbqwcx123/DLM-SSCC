@@ -15,16 +15,16 @@
 
 """Defines project-wide constants."""
 
-BATCH_SIZE = 1
+BATCH_SIZE = 16  # 过大的 batch_size 容易导致编解码出错
 
-NUM_IMAGE_TRAIN = 785 * (2048//128) * (1024//128)  # 785 张 2048x1024 图像
-NUM_IMAGE_VALID = 99 * (2048//128) * (1024//128)  # 99 张 2048x1024 图像
-NUM_IMAGE_TEST = 1
-IMAGE_SHAPE_TRAIN = (128, 128, 3)
+NUM_IMAGE_TRAIN = 785  # * (2048//128) * (1024//128)  # 785 张 2048x1024 图像
+NUM_IMAGE_VALID = 99  # * (2048//128) * (1024//128)  # 99 张 2048x1024 图像
+NUM_IMAGE_TEST = 10
+IMAGE_SHAPE_TRAIN = (1024, 2048, 3)
 IMAGE_SHAPE_TEST = (256, 256, 3)
 
-IS_CHANNEL_WISED = True  # RGB False; Gray True
-CHUNK_SHAPE_2D = (4, 4)  # 图像块的高度和宽度
+IS_CHANNEL_WISED = False  # RGB False; Gray True
+CHUNK_SHAPE_2D = (16, 16)  # 图像块的高度和宽度
 
 CHUNK_SIZE_BYTES = CHUNK_SHAPE_2D[0] * CHUNK_SHAPE_2D[1]
 CHUNK_SIZE_BYTES *= 1 if IS_CHANNEL_WISED else 3

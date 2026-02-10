@@ -153,7 +153,7 @@ def main(args):
     task_prompt = "Every three values denote an RGB pixel of a flattened image. Predict the next RGB pixel based on the previous pixels."
     # 1. 准备数据
     print(f"图像数据集路径: {args.input_path}")
-    print(f"原始图像大小: {constants.IMAGE_SHAPE}，处理图像块形状: {constants.CHUNK_SHAPE_2D}")
+    print(f"原始图像大小: {constants.IMAGE_SHAPE_TEST}，处理图像块形状: {constants.CHUNK_SHAPE_2D}")
     ##TODO: 数据加载RGB顺序要改一下
     data_iterator = data_loaders.get_image_iterator(
                     num_chunks=constants.NUM_CHUNKS_TEST,
@@ -161,8 +161,8 @@ def main(args):
                     is_seq=False,  # 按图像块顺序提取
                     data_path=args.input_path)
     
-    # save_dir_patch = os.path.join(args.output_path, 'patches/compress')
-    # os.makedirs(save_dir_patch, exist_ok=True)
+    save_dir_patch = os.path.join(args.output_path, 'patches')
+    os.makedirs(save_dir_patch, exist_ok=True)
     os.makedirs(args.output_path, exist_ok=True)
     output_file = os.path.join(args.output_path, 'compressed_output.txt')
     with open(output_file, "w") as f:
@@ -177,9 +177,9 @@ def main(args):
         # 现在放到data_loaders里筛选，减少数据加载工作量
         # if frame_id in [3,6,25,0,22,12,4,13,1,11]:  # 每个类别取1张图，共10张
         # if frame_id in [1]:  # 测试用
-            patch_name = f"{frame_id}_{idx % constants.PATCHES_PER_IMAGE}"
-            # patch_visualize(data, save_dir_patch, patch_name)
-            print(f"处理序号为 {frame_id} 的图片的第 {idx % constants.PATCHES_PER_IMAGE + 1} 个图像块...")
+            patch_name = f"{frame_id}_{idx % constants.PATCHES_PER_IMAGE_TEST}"
+            data_loaders.patch_visualize(data, save_dir_patch, patch_name)
+            print(f"处理序号为 {frame_id} 的图片的第 {idx % constants.PATCHES_PER_IMAGE_TEST + 1} 个图像块...")
             seq_array = data
             seq_array = seq_array.reshape(1, h*w*channels)  # [1, h*w*c]，同时验证大小是否正确
             flattened_array = seq_array.flatten()  # 展平为一维数组
@@ -212,16 +212,16 @@ def main(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-m', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2-medium', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
-    parser.add_argument("--checkpoint_dir", type=str, default='train_20260103_162805')
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-38000')
-    parser.add_argument("--diffusion_steps", type=int, default=50)
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
+    parser.add_argument("--diffusion_steps", type=int, default=20)
     parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'], help="置信度计算策略")
     parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
-    parser.add_argument("--dataset_type", type=str, default="DIV2K")
+    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_test")
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args()
@@ -232,8 +232,14 @@ def get_args():
     
     if args.dataset_type == "CIFAR10":
         args.input_path = os.path.join(args.input_path, "CIFAR10", "cifar10_test")
-    elif args.dataset_type == "DIV2K":
-        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test")
+    elif args.dataset_type == "DIV2K_HR":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_HR_test")
+    elif args.dataset_type == "DIV2K_LR_X2":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/X2")
+    elif args.dataset_type == "DIV2K_LR_X4":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/X4")
+    elif args.dataset_type == "DIV2K_LR_test":
+        args.input_path = os.path.join(args.input_path, "DIV2K", "DIV2K_LR_test/test")
     elif args.dataset_type == "ImageNet":
         args.input_path = os.path.join(args.input_path, "ImageNet", "test_unified")
     else:

@@ -30,7 +30,7 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
         重写 inner_forward 以实现 Image-Specific 的 Loss 计算
         """
         x = inputs["input_ids"]
-        # src_mask 用于标记“不应该被 Mask 的区域”（如条件部分）
+        # src_mask 用于标记“不应该被 Mask 的区域”（如条件部分），但在纯图像压缩中通常是全 False (全部可压缩)
         if "src_mask" not in inputs:
             src_mask = torch.zeros_like(x, dtype=torch.bool)
             src_mask[:, 0] = True  # 第一个 token 是 BOS，不被 Mask
@@ -65,7 +65,7 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
             
         # Attention Mask 设置 (Full Attention for Image)
         attn_mask_ratio = 1.0 # 使用双向全注意力
-        x_embed = get_embeds(x) # 原始输入的 Embedding，用于长度等参考，实际 model forward 会处理 x_t
+        x_embed = get_embeds(x) # 原始输入的 Embedding
         attention_mask = get_anneal_attn_mask(seq_len, batch_size, dtype=x_embed.dtype, device=device, attn_mask_ratio=attn_mask_ratio)
 
         # 获取全词表 Logits [B, L, Vocab_Size]
@@ -104,18 +104,7 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
             final_loss = torch.tensor(0.0, device=device, requires_grad=True)
             unweighted_loss = torch.tensor(0.0, device=device)
         else:
-            # 计算 Loss (自带 Softmax)
-            # reduction='none' 以便我们可以应用 dsigma 权重
-            # 但为了简化且符合 standard implementation，我们先算 mean 再乘权重，或者按 batch 算
-            # 原代码是按 batch 维度加权，这里我们简化为全局，或者尽量贴合原代码逻辑
-            
-            # 原代码逻辑复刻：
-            # loss = F.cross_entropy(..., reduction='none').reshape(batch_size, -1)
-            # 这里由于我们 mask 比较复杂，直接算出来可能更好。
-            # 为了保持 dsigma (时间步权重) 的作用，我们需要保留 batch 维度信息。
-            
-            # 重新组织计算方式：
-            # 全量计算 CrossEntropy，利用 ignore_index 处理非 mask 区域
+            # 计算 CrossEntropy，利用 ignore_index 处理非 mask 区域
             # Create a target tensor with -1 everywhere except masked positions
             full_targets = target_pixel_indices.clone()
             full_targets[~loss_mask] = -1
@@ -128,15 +117,16 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
                 ignore_index=-1
             ).view(batch_size, seq_len)
             
-            # 此时 loss_per_token 在非 mask 位置是 0
-            
             # 加权求和
+            # 确保计算过程使用 float32 以避免 FP16 下溢或精度损失
+            loss_per_token = loss_per_token.float()
+            dsigma = dsigma.float()
             # dsigma: [B] -> [B, 1]
             weighted_loss = (dsigma[:, None] * loss_per_token).sum() 
-            num_active_tokens = loss_mask.sum()
+            num_active_tokens = loss_mask.sum().float()
             
-            final_loss = weighted_loss / (num_active_tokens + 1e-6)
-            unweighted_loss = loss_per_token.sum() / (num_active_tokens + 1e-6)
+            final_loss = weighted_loss / (num_active_tokens + 1e-5)
+            unweighted_loss = loss_per_token.sum() / (num_active_tokens + 1e-5)
 
         # Logging
         if ('LOCAL_RANK' not in os.environ) or (int(os.environ['LOCAL_RANK']) == 0):

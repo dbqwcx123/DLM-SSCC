@@ -225,7 +225,7 @@ def main(args):
     print(f'Transmission channel type: {args.channel}')
     
     # SNR 范围设置
-    SNR_range_test = np.arange(0,7,3)
+    SNR_range_test = np.arange(-3,13,3)
     ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
@@ -239,7 +239,7 @@ def main(args):
     
     final_loss, final_ber, final_fer = [], [], []
     # 对每个 SNR 进行测试
-    for ii, snr_val in enumerate(SNR_range_test_real):
+    for ii, snr_val in tqdm(enumerate(SNR_range_test_real)):
         print(f"\n--- Testing SNR Index {ii}: {SNR_range_test[ii]} dB (Real: {snr_val:.2f} dB) ---")
         
         # 1. 创建 Dataset（包含所有消息）和 DataLoader
@@ -284,7 +284,7 @@ def main(args):
 ##################################################################
 def get_args():
     parser = argparse.ArgumentParser(description='PyTorch ECCT')
-    parser.add_argument('--workers', type=int, default=8)
+    parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--gpus', type=str, default="0", help='gpus ids')
     parser.add_argument('--test_batch_size', type=int, default=2048)
 
@@ -296,8 +296,8 @@ def get_args():
     parser.add_argument('--code_k', type=int, default=24)
     parser.add_argument('--code_n', type=int, default=49)
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='DIV2K_HR/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
-    parser.add_argument('--diffu_step', type=int, default=50)
+    parser.add_argument('--mode', type=str, default='DIV2K_LR_X4/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251228_192149')
+    parser.add_argument('--diffu_step', type=int, default=20)
 
     # Model args
     parser.add_argument('--isParallel', type=bool, default=True)

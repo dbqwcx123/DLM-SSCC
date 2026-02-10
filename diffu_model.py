@@ -117,11 +117,11 @@ def get_confidence_entropy(logits, mask_indices):
     
     # 计算熵: H(x) = - sum(p * log(p))
     entropy = -torch.sum(probs * log_probs, dim=-1) # [batch, seq_len]
-    # selected_entropy = entropy[0, mask_indices]
+    selected_entropy = entropy[0, mask_indices]
     
     # 返回负熵 (熵越小，置信度越大)
-    # confidences = -selected_entropy
-    confidences = -entropy
+    confidences = -selected_entropy
+    # confidences = -entropy
     
     return confidences
 
@@ -322,15 +322,9 @@ def load_ddm(args):
                     device='cuda'
                 )
         elif args.base_model_name == 'llama':
-            if torch.cuda.get_device_capability()[0] >= 8:
-                print("使用 bfloat16 和 flash_attention_2 加载 LLaMA 模型")
-                torch_dtype = torch.bfloat16
-                attn_implementation = "flash_attention_2"  #  flash_attention_2 用linux跑
-            else:
-                print("使用 float16 和 eager_attention 加载 LLaMA 模型")
-                torch_dtype = torch.float16
-                attn_implementation = "eager"
-                
+            torch_dtype = torch.bfloat16
+            attn_implementation = "flash_attention_2"  # linux
+            
             model = LlamaForCausalLM.from_pretrained(
                 model_name,
                 device_map='auto',
