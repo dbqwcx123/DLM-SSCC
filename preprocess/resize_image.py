@@ -80,9 +80,9 @@ def process_and_save(src_dir, dst_dir, valid_files, target_w, target_h):
                 w, h = img.size
                 
                 # 1. 旋转：统一为横图 (宽 > 高)
-                if h > w:
-                    img = img.transpose(Image.Transpose.ROTATE_90)
-                    w, h = img.size # 更新尺寸
+                # if h > w:
+                #     img = img.transpose(Image.Transpose.ROTATE_90)
+                #     w, h = img.size # 更新尺寸
                 
                 # 2. 修改点：宽度填充 (Padding)
                 # 针对 DIV2K (2040 -> 2048) 或其他宽度不足的情况
@@ -133,11 +133,11 @@ def process_and_save(src_dir, dst_dir, valid_files, target_w, target_h):
 
 if __name__ == "__main__":
     # ---------------- 配置区域 ----------------
-    source_path = "../Dataset/DIV2K/DIV2K_valid_LR/X4"
-    target_path = "../Dataset/DIV2K/DIV2K_LR_unified/valid"
+    source_path = "../Dataset/DIV2K/DIV2K_LR_unified/X4/valid"
+    target_path = "../Dataset/DIV2K/DIV2K_LR_unified/X4/test_10"
     
     # 修改点：固定尺寸配置
-    FIXED_WIDTH = 512    # 目标长边
+    FIXED_WIDTH = 256    # 目标长边
     FIXED_HEIGHT = 256   # 目标短边
     MIN_THRESHOLD = 256  # 短边剔除阈值
     # -----------------------------------------

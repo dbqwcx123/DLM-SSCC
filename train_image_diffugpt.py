@@ -248,7 +248,6 @@ def run_finetuning():
     print("Starting Training...")
     train_result = trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
     trainer.save_model()
-    model.config.save_pretrained(args.output_dir)
     trainer.log_metrics("train", train_result.metrics)
     trainer.save_metrics("train", train_result.metrics)
     trainer.save_state()

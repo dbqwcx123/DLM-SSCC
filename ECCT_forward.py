@@ -225,11 +225,11 @@ def main(args):
     print(f'Transmission channel type: {args.channel}')
     
     # SNR 范围设置
-    SNR_range_test = np.arange(-3,13,3)
+    SNR_range_test = np.arange(0,7,3)
     ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
-    codeword_len_unified = _out_channel * (constants.IMAGE_SHAPE[0]//4) * (constants.IMAGE_SHAPE[1]//4) * _float_base * constants.NUM_IMAGE_TEST
+    codeword_len_unified = _out_channel * (constants.IMAGE_SHAPE_TEST[0]//4) * (constants.IMAGE_SHAPE_TEST[1]//4) * _float_base * constants.NUM_IMAGE_TEST
     print(f'Codeword length unified: {codeword_len_unified}')
     SNR_range_test_real = SNR_range_test + 10*np.log10(codeword_len_unified/codeword_len)
     # SNR_range_test_real = SNR_range_test
@@ -296,8 +296,8 @@ def get_args():
     parser.add_argument('--code_k', type=int, default=24)
     parser.add_argument('--code_n', type=int, default=49)
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='DIV2K/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
-    parser.add_argument('--diffu_step', type=int, default=20)
+    parser.add_argument('--mode', type=str, default='DIV2K_HR/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
+    parser.add_argument('--diffu_step', type=int, default=50)
 
     # Model args
     parser.add_argument('--isParallel', type=bool, default=True)

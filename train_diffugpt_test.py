@@ -148,7 +148,7 @@ def run_finetuning():
     parser.add_argument("--data_dir", type=str, default="../Dataset/DIV2K/DIV2K_HR_test", help="Path to DIV2K")
     # parser.add_argument("--output_dir", type=str, default="./ddm-sft_output/diffugpt-s")
     parser.add_argument("--diffusion_steps", type=int, default=100)
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=4)
     # parser.add_argument("--grad_acc_step", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)  # LoRA 训练可以用大一点的学习率
     parser.add_argument("--epoch", type=int, default=5)
@@ -165,7 +165,7 @@ def run_finetuning():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     subdir_name = f"train_lora_{timestamp}" if args.use_lora else f"train_full_{timestamp}"
     args.output_dir = os.path.join(args.model_path, "ddm-sft", subdir_name)
-    args.output_dir = './Model_test/test_bf16'
+    args.output_dir = './Model_test/test_fp16'
     
     # 获取当前进程的 local_rank (由 torchrun 自动注入环境变量)
     local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -174,7 +174,8 @@ def run_finetuning():
     # 1. Load Model
     print("Loading tokenizer and DiscreteDiffusionModel...")
     tokenizer, model = load_ddm(args)
-    
+    model.config.use_cache = False
+
     if args.use_lora:
         print(f"Applying LoRA (Rank={args.lora_rank}, Alpha={args.lora_alpha})...")
         # GPT-2 的注意力模块通常命名为 c_attn
@@ -214,7 +215,7 @@ def run_finetuning():
         overwrite_output_dir=True,
         do_train=True,
         per_device_train_batch_size=args.batch_size,
-        dataloader_num_workers=4,
+        dataloader_num_workers=16,
         dataloader_pin_memory=True,  # 加速数据从内存到显存的传输
         gradient_accumulation_steps=args.grad_acc_step,
         learning_rate=args.lr,
@@ -232,8 +233,8 @@ def run_finetuning():
         save_steps=2000,
         save_total_limit=3,
         save_safetensors=False,  # 保存为 .bin 格式
-        bf16=True,
-        fp16=False,
+        bf16=False,
+        fp16=True,
         # deepspeed='ds_z2_config.json',
         ddp_timeout=180000000,
         remove_unused_columns=False,  # 重要：防止 input_ids 被过滤
@@ -244,7 +245,7 @@ def run_finetuning():
         # LoRA 训练时，只保存 Adapter 可以节省空间
         save_only_model=True if args.use_lora else False
     )
-    
+
     # 4. Finetuning Args (用于 Trainer 内部的 diffusion 参数)
     finetuning_args = FinetuningArguments(
         stage="ddm-sft",
@@ -279,7 +280,7 @@ def run_finetuning():
 
 if __name__ == "__main__":
     # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 train_diffugpt_test.py
-    # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0 python train_diffugpt_test.py
+    # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=1 python train_diffugpt_test.py
     import torch.multiprocessing as mp
     mp.set_start_method('spawn', force=True)
     run_finetuning()
