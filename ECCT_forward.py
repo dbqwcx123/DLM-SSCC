@@ -60,6 +60,7 @@ class My_Dataset(data.Dataset):
             raise ValueError("Invalid channel type.")
         
         y = h * bin_to_sign(x) + z
+        
         magnitude = torch.abs(y)
         syndrome = torch.matmul(sign_to_bin(torch.sign(y)).long().float(),
                                 self.pc_matrix) % 2
@@ -201,21 +202,15 @@ def main(args):
     args.model_path = model_dir
     args.msg_path = msg_dir
     
-    # 日志配置
-    # handlers = [logging.FileHandler(os.path.join(model_dir, 'logging_test.txt')), logging.StreamHandler()]
-    # logging.basicConfig(level=print, format='%(message)s', handlers=handlers)
-    
     print(f"Path to model\logs: {model_dir}")
     print(args)
     
-    # 读取消息
     message_list, message_len, codeword_len = read_message_from_txt(args.msg_path)
     print(f'Message total length: {message_len}')
     print(f'Codeword total length: {codeword_len}')
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 加载模型
     model = torch.load(os.path.join(args.model_path, 'best_model'), map_location='cpu')
     if hasattr(model, 'module'):
         model = model.module.to(device)
@@ -224,8 +219,7 @@ def main(args):
     
     print(f'Transmission channel type: {args.channel}')
     
-    # SNR 范围设置
-    SNR_range_test = np.arange(-3,13,3)
+    SNR_range_test = np.arange(-1,10,2)
     ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
@@ -238,7 +232,6 @@ def main(args):
     std_test = [SNR_to_std(ii) for ii in SNR_range_test_real]
     
     final_loss, final_ber, final_fer = [], [], []
-    # 对每个 SNR 进行测试
     for ii, snr_val in tqdm(enumerate(SNR_range_test_real)):
         print(f"\n--- Testing SNR Index {ii}: {SNR_range_test[ii]} dB (Real: {snr_val:.2f} dB) ---")
         
@@ -286,7 +279,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='PyTorch ECCT')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--gpus', type=str, default="0", help='gpus ids')
-    parser.add_argument('--test_batch_size', type=int, default=2048)
+    parser.add_argument('--test_batch_size', type=int, default=1024)
 
     # Message args
     parser.add_argument('--msg_filename', type=str, default='compressed_output')
@@ -298,9 +291,6 @@ def get_args():
     parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
     parser.add_argument('--mode', type=str, default='DIV2K_LR_X4/entropy_confidence/channel_corre/patch(16, 16)/diffugpt-s_ddm-sft/train_20251228_192149')
     parser.add_argument('--diffu_step', type=int, default=20)
-
-    # Model args
-    parser.add_argument('--isParallel', type=bool, default=True)
     
     args = parser.parse_args()
     return args

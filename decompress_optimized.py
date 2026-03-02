@@ -15,7 +15,6 @@ import constants
 from data_loaders import patch_visualize
 from utils import arithmetic_coder
 from utils.ac_utils import normalize_pdf_for_arithmetic_coding
-from utils.ECCT_utils import set_seed
 from utils.pixel_token_dict import *
 
 # ==========================================
@@ -140,7 +139,6 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
         for t in range(args.diffusion_steps-1, -1, -1):
             
             # 1. GPU 推理
-            # with torch.cuda.amp.autocast(enabled=True):  # 混合精度
             with torch.no_grad():
                 raw_logits = model(xt, attention_mask=attention_mask)
             
@@ -149,15 +147,12 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             logits_pixel = logits_shifted[:,:, ctx.pixel_token_ids]
             
             # 3. 置信度计算
-            if args.confidence_st == 'entropy':
-                confidences = get_confidence_entropy(logits_pixel, None)
-            else:
-                probs = F.softmax(logits_pixel, dim=-1)
-                max_probs, _ = probs.max(dim=-1)
-                confidences = max_probs
-            
-            # 仅关注还未解码的位置 (maskable_mask 为 True 的位置)
+            confidences = get_confidence_entropy(logits_pixel, None)
             confidences = confidences.masked_fill(~maskable_mask, float('-inf'))
+            
+            # 【新增修复】：抹除底层 cuBLAS 带来的微小浮点误差
+            # 确保相近的置信度被强制拉平，交由 stable sort 按空间位置索引保持稳定的先后顺序
+            confidences = torch.round(confidences * 1e4) / 1e4
             
             # -----------------------------------------------------------------------------
             # 计算每个样本实际剩余的 mask 数量 [B]
@@ -196,9 +191,7 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
                 for i in range(actual_k):
                     try:
                         pixel_val = dec.decode(normalize_pdf_for_arithmetic_coding(p_b[i]))
-                        # ... (越界检查代码不变)
                     except Exception as e:
-                        # ... (错误处理不变)
                         pixel_val = 128
                     decoded_pixel_values[b, i] = pixel_val
             
@@ -232,63 +225,6 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             # 更新 Mask
             maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
             
-            # # -----------------------------------------------------------------------------
-            # # 计算当前步需要解码的 token 数量 k
-            # num_current_masks = torch.sum(maskable_mask, dim=1).max().item()
-            # if num_current_masks == 0: break
-            
-            # ratio = 1.0 / (t + 1)
-            # k = max(1, min(int(num_current_masks * ratio), num_current_masks))
-            
-            # # 4. 使用稳定排序策略获取解码位置
-            # # _, sorted_indices = torch.sort(confidences, descending=True, stable=True)
-            # sorted_indices = batch_stable_sort(confidences)
-            # target_indices = sorted_indices[:, :k]
-            
-            # # 5. 提取这些位置的概率分布
-            # batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
-            # target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
-            # target_probs = torch.softmax(target_logits.double(), dim=-1) # [B, K, 256]
-            
-            # # 6. 数据回传 CPU 进行解码
-            # target_probs_cpu = target_probs.cpu().numpy()
-            
-            # profiler.end_tick()
-            # profiler.tick("Arithmetic Decoding (CPU)")
-            
-            # decoded_pixel_values = np.zeros((batch_size, k), dtype=np.int64)
-            
-            # # 串行解码 (Batch内循环)
-            # for b in range(batch_size):
-            #     dec = decoders[b]
-            #     p_b = target_probs_cpu[b] # [K, 256]
-            #     for i in range(k):
-            #         try:
-            #             pixel_val = dec.decode(normalize_pdf_for_arithmetic_coding(p_b[i]))
-            #             if not (0<=pixel_val<256):
-            #                 print(f"警告: 解码出错，像素值 {pixel_val} 越界，强制设为128")
-            #                 pixel_val = 128  # 沿用D3PM设置，解码失败则为灰像素
-            #         except Exception as e:
-            #             print(f"错误: Batch {b} 第 {i} 个像素解码失败，设为128，错误信息: {e}")
-            #             pixel_val = 128  # 沿用D3PM设置，解码失败则为灰像素
-            #         decoded_pixel_values[b, i] = pixel_val
-            
-            # profiler.end_tick()
-            # profiler.tick("Model Inference (GPU)")
-            
-            # # 7. 更新状态 (GPU)
-            # # 将解码出的像素值转回 Token ID
-            # decoded_pixels_tensor = torch.tensor(decoded_pixel_values, device=device, dtype=torch.long)
-            # decoded_token_ids = ctx.pixel_to_token_tensor[decoded_pixels_tensor] # [B, K]
-            
-            # # 填入 xt
-            # xt.scatter_(1, target_indices, decoded_token_ids)
-            
-            # # 更新 Mask (将已解码位置设为 False)
-            # false_tensor = torch.zeros_like(decoded_token_ids, dtype=torch.bool)
-            # maskable_mask.scatter_(1, target_indices, false_tensor)
-            # # --------------------------------------------------------------------------------
-
     profiler.tick("Finalize")
     
     # 提取图像部分 (去除 BOS)
@@ -373,7 +309,7 @@ def main(args):
         return
     
     # channel = AWGN/Rayleigh
-    for SNR in range(12, -4, -3):
+    for SNR in range(5, -4, -2):
         print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
         args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
         save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
@@ -389,8 +325,7 @@ def main(args):
             lines = f.readlines()
     
         print(f"总 Patch 数: {len(lines)}")
-        print(f"Batch Size: {constants.BATCH_SIZE}")
-        print(f"🚀 开始高性能扩散解码 (True Batching + Stable Sort)...")
+        # print(f"🚀 开始高性能扩散解码 (True Batching + Stable Sort)...")
         
         start_time_total = time.time()
         
@@ -433,11 +368,8 @@ def main(args):
                         Image.fromarray(full_image[:, :, 0], mode='L').save(img_save_path)
                     else:
                         Image.fromarray(full_image, mode='RGB').save(img_save_path)
-                    print(f"保存图像: {img_save_path}")
+                    # print(f"保存图像: {img_save_path}")
                     image_idx += 1
-                
-                if i % (constants.BATCH_SIZE * 5) == 0 and args.verbose:
-                    profiler.print_stats()
                     
         # 处理剩余的
         if len(batch_buffer) > 0:
@@ -455,46 +387,42 @@ def main(args):
                     Image.fromarray(full_image[:, :, 0], mode='L').save(img_save_path)
                 else:
                     Image.fromarray(full_image, mode='RGB').save(img_save_path)
-                print(f"保存图像: {img_save_path}")
+                # print(f"保存图像: {img_save_path}")
                 image_idx += 1
             
         end_time_total = time.time()
         
-        profiler.print_stats()
         print(f"总耗时: {end_time_total - start_time_total:.2f}s")
         print(f"平均速度: {(end_time_total - start_time_total)/len(lines):.4f} s/patch")
-        print("解码完成。")
+    profiler.print_stats()
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m', 'diffullama'])
-    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium', 'llama'])
+    parser.add_argument("--model_name", type=str, default='diffugpt-s', choices=['diffugpt-s', 'diffugpt-m'])
+    parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
-    parser.add_argument("--ddm_sft", type=bool, default=True, help="是否使用微调后的DiffuGPT模型")
-    parser.add_argument("--checkpoint_dir", type=str, default='train_20251228_192149')
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-48000')
-    parser.add_argument("--diffusion_steps", type=int, default=20)
-    parser.add_argument("--confidence_st", type=str, default='entropy', choices=['entropy', 'topk', 'simple'])
-    parser.add_argument('--verbose', type=bool, default=False, help='打印详细过程')
+    parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
+    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
+    parser.add_argument("--diffusion_steps", type=int, default=100)
     parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
-    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4")
-    parser.add_argument("--root_dir", type=str, default="./image_io", help="输入输出文件夹的根目录")
-    
+    parser.add_argument("--channel_code", type=str, default='POLAR_K32_N64')
+    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--root_dir", type=str, default="./image_io")
     args = parser.parse_args()
     
     args.model_path = os.path.join(args.model_path, args.model_name)
     if args.ddm_sft:
         args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)
-    args.root_dir = os.path.join(args.root_dir, f'{args.dataset_type}', f'{args.confidence_st}_confidence')
-    args.root_dir = os.path.join(args.root_dir, 'channel_indep') if constants.IS_CHANNEL_WISED else os.path.join(args.root_dir, 'channel_corre')
+    args.root_dir = os.path.join(args.root_dir, f'{args.dataset_type}', f'patch{constants.CHUNK_SHAPE_2D}')
     if args.ddm_sft:
-        args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
+        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
     else:
-        args.root_dir = os.path.join(args.root_dir, f'patch{constants.CHUNK_SHAPE_2D}', f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
+        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
     
     if args.channel:
-        args.input_dir  = os.path.join(args.root_dir, f"ECCT_forward/LDPC_K24_N49/{args.channel}")
-        args.output_dir = os.path.join(args.root_dir, f"ECCT_reconstruct/LDPC_K24_N49/{args.channel}")
+        args.input_dir  = os.path.join(args.root_dir, f"MM_ECCT_forward/{args.channel_code}/{args.channel}")
+        args.output_dir = os.path.join(args.root_dir, f"MM_ECCT_reconstruct/{args.channel_code}/{args.channel}")
     else:
         args.input_dir  = args.root_dir
         args.output_dir = args.root_dir

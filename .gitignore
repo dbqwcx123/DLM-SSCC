@@ -166,10 +166,13 @@ cache/
 config/
 saves/
 output/
+
 wandb/
 **__pycache__**
 image_io/
 *.png
 *.csv
 
+.vscode/
 Model_test/
+Codes_DB/

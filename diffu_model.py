@@ -1,4 +1,6 @@
 import os
+import random
+import numpy as np
 import torch
 import torch.distributions as dists
 from utils.attention_patch import replace_attention_mask
@@ -98,6 +100,17 @@ def get_anneal_attn_mask(seq_len, bsz, dtype, device, attn_mask_ratio):
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # torch.use_deterministic_algorithms(True)
+    # os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    
+
 def get_confidence_entropy(logits, mask_indices):
     """
     计算掩码位置的置信度。
@@ -117,11 +130,11 @@ def get_confidence_entropy(logits, mask_indices):
     
     # 计算熵: H(x) = - sum(p * log(p))
     entropy = -torch.sum(probs * log_probs, dim=-1) # [batch, seq_len]
-    selected_entropy = entropy[0, mask_indices]
+    # selected_entropy = entropy[0, mask_indices]
     
     # 返回负熵 (熵越小，置信度越大)
-    confidences = -selected_entropy
-    # confidences = -entropy
+    # confidences = -selected_entropy
+    confidences = -entropy
     
     return confidences
 
@@ -293,50 +306,24 @@ def load_ddm(args):
     
     if use_manual_loading:
         print(f"检测到 pytorch_model.bin 且无 safetensors，使用手动模式加载模型权重")
-    
-        if args.base_model_name in ['gpt2', 'gpt2-medium']:
-            with torch.device('cuda'):
-                model = DiscreteDiffusionModel(
-                    model=args.base_model_name, 
-                    config=config, 
-                    tokenizer=tokenizer,
-                    device='cuda'
-                )
-        elif args.base_model_name == 'llama':
-            # ... LLaMA 的手动加载逻辑 ...
-            pass
-        else:
-            raise ValueError(f"未知的基础模型: {args.base_model_name}")
-        state_dict = torch.load(bin_file, map_location='cuda')
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        print(f"权重加载完成。丢失键: {len(missing)}, 多余键: {len(unexpected)}")
-    else:
-        print(f"使用默认 from_pretrained 加载模型")
-        if args.base_model_name in ['gpt2', 'gpt2-medium']:
-            with torch.device('cuda'):
-                model = DiscreteDiffusionModel.from_pretrained(
-                    model_name, 
-                    model=args.base_model_name, 
-                    config=config, 
-                    tokenizer=tokenizer,
-                    device='cuda'
-                )
-        elif args.base_model_name == 'llama':
-            torch_dtype = torch.bfloat16
-            attn_implementation = "flash_attention_2"  # linux
-            
-            model = LlamaForCausalLM.from_pretrained(
-                model_name,
-                device_map='auto',
-                _attn_implementation=attn_implementation,
-                torch_dtype=torch_dtype
-            )
-        
+        with torch.device('cuda'):
             model = DiscreteDiffusionModel(
-                model=model, 
+                model=args.base_model_name, 
                 config=config, 
                 tokenizer=tokenizer,
                 device='cuda'
-            ).to('cuda')
+            )
+        state_dict = torch.load(bin_file, map_location='cuda')
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    else:
+        print(f"使用默认 from_pretrained 加载模型")
+        with torch.device('cuda'):
+            model = DiscreteDiffusionModel.from_pretrained(
+                model_name, 
+                model=args.base_model_name, 
+                config=config, 
+                tokenizer=tokenizer,
+                device='cuda'
+            )
     
     return tokenizer, model
