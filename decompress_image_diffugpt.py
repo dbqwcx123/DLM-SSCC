@@ -309,7 +309,7 @@ def main(args):
         return
     
     # channel = AWGN/Rayleigh
-    for SNR in range(5, -4, -2):
+    for SNR in range(11, -4, -2):
         print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
         args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
         save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
@@ -404,10 +404,10 @@ def get_args():
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
     parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
-    parser.add_argument("--diffusion_steps", type=int, default=100)
-    parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
-    parser.add_argument("--channel_code", type=str, default='POLAR_K32_N64')
-    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--diffusion_steps", type=int, default=10)
+    parser.add_argument("--channel", type=str, default='Rayleigh', choices=[None, 'AWGN', 'Rayleigh'])
+    parser.add_argument("--channel_code", type=str, default='POLAR_K48_N64')
+    parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--root_dir", type=str, default="./image_io")
     args = parser.parse_args()
     

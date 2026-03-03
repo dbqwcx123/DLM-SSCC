@@ -295,9 +295,9 @@ def get_args():
     parser.add_argument('--code_type', type=str, default='POLAR', choices=['BCH', 'POLAR', 'LDPC', 'CCSDS', 'MACKAY'])
     parser.add_argument('--code_k', type=int, default=48)
     parser.add_argument('--code_n', type=int, default=64)
-    parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='DIV2K_LR_X4/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
-    parser.add_argument('--diffu_step', type=int, default=10)
+    parser.add_argument('--channel', type=str, default='Rayleigh', choices=['AWGN', 'Rayleigh'])
+    parser.add_argument('--mode', type=str, default='CIFAR10/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
+    parser.add_argument('--diffu_step', type=int, default=100)
     
     args = parser.parse_args()
     return args

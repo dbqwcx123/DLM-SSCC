@@ -264,7 +264,6 @@ def run_finetuning():
 
 if __name__ == "__main__":
     # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 train_image_diffugpt.py
-    # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=1 python train_image_diffugpt.py
     import torch.multiprocessing as mp
     mp.set_start_method('spawn', force=True)
     run_finetuning()
