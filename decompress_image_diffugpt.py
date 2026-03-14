@@ -89,8 +89,11 @@ def make_input_fn(bit_string):
         try:
             return int(next(iterator))
         except StopIteration:
-            # 如果流耗尽，通常意味着解码结束或Padding
-            return 0 
+            # 【关键修复】：将流耗尽时的 Padding 由 0 改为 1。
+            # 算术编码 terminate 时通常直接截断（向下取整）。
+            # 补 1 可以提供微小的向上补偿，抵消截断误差，
+            # 确保最后几个置信度极低的像素能完美落入正确的概率区间，消除 -1 误差。
+            return 1
     return _fn
 
 # ==========================================
@@ -138,8 +141,8 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
     with torch.inference_mode():
         for t in range(args.diffusion_steps-1, -1, -1):
             
-            # 1. GPU 推理
-            with torch.no_grad():
+            # 1. GPU 推理 (开启混合精度，强制走 Tensor Core)
+            with torch.autocast(device_type=device, dtype=torch.float16):
                 raw_logits = model(xt, attention_mask=attention_mask)
             
             # 2. Logits 处理 & Shift
@@ -170,9 +173,10 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             # 提取概率
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
-            target_probs = torch.softmax(target_logits.double(), dim=-1) 
-            
-            target_probs_cpu = target_probs.cpu().numpy()
+            # GPU上用 float32 计算 Softmax，极速且防溢出
+            target_probs = torch.softmax(target_logits.float(), dim=-1) 
+            # 传回 CPU 后，转换为真正的 float64，供算术编码器使用
+            target_probs_cpu = target_probs.cpu().numpy().astype(np.float64)
             masks_left_cpu = masks_left_per_sample.cpu().numpy()
             
             profiler.end_tick()
@@ -309,7 +313,8 @@ def main(args):
         return
     
     # channel = AWGN/Rayleigh
-    for SNR in range(11, -4, -2):
+    SNR_range_test = np.arange(0.5,args.snr_max,1)
+    for ii, SNR in tqdm(enumerate(SNR_range_test)):
         print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
         args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
         save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')
@@ -404,11 +409,12 @@ def get_args():
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
     parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
-    parser.add_argument("--diffusion_steps", type=int, default=10)
-    parser.add_argument("--channel", type=str, default='Rayleigh', choices=[None, 'AWGN', 'Rayleigh'])
-    parser.add_argument("--channel_code", type=str, default='POLAR_K48_N64')
+    parser.add_argument("--diffusion_steps", type=int, default=100)
+    parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
+    parser.add_argument("--channel_code", type=str, default='POLAR_K32_N64')
     parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--root_dir", type=str, default="./image_io")
+    parser.add_argument("--snr_max", type=int, default=3)
     args = parser.parse_args()
     
     args.model_path = os.path.join(args.model_path, args.model_name)

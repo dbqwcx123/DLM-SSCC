@@ -122,8 +122,8 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
 
     with torch.inference_mode():
         for t in range(args.diffusion_steps-1, -1, -1):
-            # 1. GPU 推理
-            with torch.no_grad():
+            # 1. GPU 推理 (开启混合精度，强制走 Tensor Core)
+            with torch.autocast(device_type=device, dtype=torch.float16):
                 raw_logits = model(xt, attention_mask=attention_mask)
             
             # 2. Logits 处理
@@ -154,7 +154,8 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             # 4. 提取数据
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
-            target_probs = torch.softmax(target_logits.double(), dim=-1)
+            # GPU上用 float32 计算 Softmax，极速且防溢出
+            target_probs = torch.softmax(target_logits.float(), dim=-1)
             true_token_ids = torch.gather(x, 1, target_indices)
             
             # 5. 更新输入 xt (仅 GPU 更新部分，先不急着 scatter)
@@ -187,7 +188,8 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
             
             # 6. 数据传回 CPU
-            target_probs_cpu = target_probs.cpu().numpy()
+            # 传回 CPU 后，转换为真正的 float64，供算术编码器使用
+            target_probs_cpu = target_probs.cpu().numpy().astype(np.float64)
             true_pixel_vals_gpu = torch.gather(ctx.id_to_pixel_tensor, 0, true_token_ids.view(-1)).view(batch_size, k)
             true_pixel_vals_cpu = true_pixel_vals_gpu.cpu().numpy()
             
@@ -304,7 +306,7 @@ def get_args():
     parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
     parser.add_argument("--diffusion_steps", type=int, default=100)
-    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4")
+    parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args()

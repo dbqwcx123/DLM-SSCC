@@ -190,7 +190,7 @@ class Code():
 def main(args):
     # 路径设置和验证
     model_dir = f'../Model/Results_MM_ECCT/{args.code_type}__Code_n_{args.code_n}_k_{args.code_k}_{args.channel}'
-    msg_dir = f'./image_io/{mode}/diffu_step{diffu_step}/{args.msg_filename}.txt'
+    msg_dir = f'./image_io/{dataset_type}/{mode}/{args.msg_filename}.txt'
     
     if not os.path.exists(model_dir):
         raise FileNotFoundError(f"Model_dir {model_dir} does not exist.")
@@ -217,7 +217,7 @@ def main(args):
     
     print(f'Transmission channel type: {args.channel}')
     
-    SNR_range_test = np.arange(-3,13)
+    SNR_range_test = np.arange(-3,13,1)
     ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
@@ -264,7 +264,7 @@ def main(args):
         # 3. 保存解码后的信息流并恢复多行结构
         recovered_lines = reconstruct_lines(all_pred_bits, message_list, code, info_positions)
         
-        output_extracted_filename = f'./image_io/{mode}/diffu_step{diffu_step}/MM_ECCT_forward/{code.code_name}/{channel}/demo_decode_SNR_{SNR_range_test[ii]}.txt'
+        output_extracted_filename = f'./image_io/{dataset_type}/{mode}/MM_ECCT_forward/{code.code_name}/{channel}/demo_decode_SNR_{SNR_range_test[ii]}.txt'
         os.makedirs(os.path.dirname(output_extracted_filename), exist_ok=True)
         
         # 写入文件：现在 recovered_lines 的长度应该和 message_list 一样
@@ -272,20 +272,20 @@ def main(args):
             for line in recovered_lines:
                 f.write(line + "\n")
                 
-    metric_filename = f'./image_io/{mode}/diffu_step{diffu_step}/MM_ECCT_forward/{code.code_name}/{channel}/#demo_decode_metric.txt'
+    metric_filename = f'./image_io/{dataset_type}/{mode}/MM_ECCT_forward/{code.code_name}/{channel}/#demo_decode_metric.txt'
     os.makedirs(os.path.dirname(metric_filename), exist_ok=True)
     with open(metric_filename, "w") as f:
         f.write("loss:\n"+ ", ".join([f"{x:.8e}" for x in final_loss]))
         f.write("\nBER:\n"+ ", ".join([f"{x:.8e}" for x in final_ber]))
         f.write("\nFER:\n"+ ", ".join([f"{x:.8e}" for x in final_fer]))
         
-    print(f"\nTesting completed. Results saved to image_io/{mode}/diffu_step{diffu_step}/...")
+    print(f"\nTesting completed. Results saved to image_io/{dataset_type}/{mode}/...")
 
 ##################################################################
 def get_args():
     parser = argparse.ArgumentParser(description='PyTorch MM-ECCT')
     parser.add_argument('--workers', type=int, default=4)
-    parser.add_argument('--gpus', type=str, default="1", help='gpus ids')
+    parser.add_argument('--gpus', type=str, default='1', help='gpus ids')
     parser.add_argument('--test_batch_size', type=int, default=2048)
 
     # Message args
@@ -293,11 +293,11 @@ def get_args():
 
     # Code args
     parser.add_argument('--code_type', type=str, default='POLAR', choices=['BCH', 'POLAR', 'LDPC', 'CCSDS', 'MACKAY'])
-    parser.add_argument('--code_k', type=int, default=48)
+    parser.add_argument('--code_k', type=int, default=32)
     parser.add_argument('--code_n', type=int, default=64)
     parser.add_argument('--channel', type=str, default='Rayleigh', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument('--mode', type=str, default='CIFAR10/patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454')
-    parser.add_argument('--diffu_step', type=int, default=100)
+    parser.add_argument("--dataset_type", type=str, default='DIV2K_LR_X4', choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument('--mode', type=str, default='JPEG_XL')  # 'JPEG_XL', 'patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454/diffu_step10'
     
     args = parser.parse_args()
     return args
@@ -326,7 +326,7 @@ if __name__ == '__main__':
     code.code_name = f'{code.code_type}_K{code.k}_N{code.n}'
     
     channel = args.channel
+    dataset_type = args.dataset_type
     mode = args.mode
-    diffu_step = args.diffu_step
     
     main(args)
