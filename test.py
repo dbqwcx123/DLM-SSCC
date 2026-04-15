@@ -1,21 +1,25 @@
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-from skimage.metrics import peak_signal_noise_ratio as psnr
-from skimage.metrics import structural_similarity as ssim
-from skimage import io
 import csv
+import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+from PIL import Image
+from skimage import io
 import constants
 from tqdm import tqdm
 
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+
 # 配置参数
-channels = ['AWGN', 'Rayleigh']
-snr_values = list(range(-3, 13, 2))
+channels = ['AWGN']#, 'Rayleigh']
+SNR_range_test = list(range(0, 3))
 
-dataset_type = 'CIFAR10'  # CIFAR10, DIV2K_LR_X4, DIV2K_HR, Kodak
+dataset_type = 'CIFAR10'  # CIFAR10, DIV2K_LR_X4, Kodak
 
-model = 'igpt-s'  # diffugpt-s, igpt-s, JPEG_XL
-ddm_sft = False  # True or False
+model = 'diffugpt-s'  # diffugpt-s, igpt-s, JPEG_XL, DLPR
+ddm_sft = True  # True or False
 if ddm_sft:
     model += '_ddm-sft'
     checkpoint_dir = 'train_20251226_231454'
@@ -23,7 +27,7 @@ if ddm_sft:
 else:
     mode = model
     
-diffu_step = 10
+diffu_step = 100
 channel_decode_alg = 'MM_ECCT'  # SCL, BP, ECCT, MM_ECCT
 code_name = 'POLAR_K32_N64'
 
@@ -33,12 +37,21 @@ else:
     csv_filename = f'./_curves/{dataset_type}/{channel_decode_alg}/{code_name}/{model}.csv'
 os.makedirs(os.path.dirname(csv_filename), exist_ok=True)
 
-# 存储结果的字典
-results = {channel: {snr: {'psnr': [], 'ssim': []} for snr in snr_values} for channel in channels}
+# ======================================================================
+SDOP_PSNR_THRESHOLD = 30
 
-# 计算每个图像对的PSNR和SSIM
+# 存储结果的字典 (改为存储各指标的具体数值)
+results = {
+    channel: {
+        snr: {'mse': [], 'ssim': []} 
+        for snr in SNR_range_test
+    } 
+    for channel in channels
+}
+
+# 计算指标
 for channel in tqdm(channels, desc='Processing channels'):
-    for snr in tqdm(snr_values, desc=f'Processing SNR for {channel}', leave=False):
+    for snr in tqdm(SNR_range_test, desc=f'Processing SNR for {channel}', leave=False):
     # for snr in [0]: # 仅测试 SNR=0 的情况
         for idx in range(10):
             orig_path = f"./image_io/{dataset_type}/gt/image_{idx}.png"
@@ -46,10 +59,8 @@ for channel in tqdm(channels, desc='Processing channels'):
                 recon_path = f"./image_io/{dataset_type}/patch{constants.CHUNK_SHAPE_2D}/{mode}/diffu_step{diffu_step}/"
             elif 'igpt' in model:
                 recon_path = f"./image_io/{dataset_type}/patch{constants.CHUNK_SHAPE_2D}/{mode}/"
-            elif 'JPEG' in model:
-                recon_path = f"./image_io/{dataset_type}/{mode}/"
             else:
-                print("model 类型有误！")
+                recon_path = f"./image_io/{dataset_type}/{mode}/"
             recon_path += f"{channel_decode_alg}_reconstruct/{code_name}/{channel}/SNR_{snr}/image_{idx}.png"
             
             if not os.path.exists(orig_path):
@@ -63,78 +74,57 @@ for channel in tqdm(channels, desc='Processing channels'):
                 orig_img = io.imread(orig_path)
                 recon_img = io.imread(recon_path)
                 
-                orig_img_int = orig_img.astype(np.uint8)
-                recon_img_int = recon_img.astype(np.uint8)
-                
-                # 计算绝对差值矩阵
-                diff = np.abs(orig_img_int - recon_img_int)
-                # 手动处理完美重建，设置PSNR上限为 100 dB
+                # ----------------------------------------------------
+                # 1. 记录 MSE 用于后续计算 Corrected PSNR
+                # ----------------------------------------------------
+                diff = np.abs(orig_img.astype(np.float32) - recon_img.astype(np.float32))
                 mse = np.mean(diff ** 2)
-                if mse < 1e-10:
-                    psnr_value = 100.0
-                else:
-                    psnr_value = psnr(orig_img, recon_img, data_range=255)
-
-                # ================= 新增：寻找并输出错误像素 =================
-                # if mse > 0:
-                #     # np.where 找出所有差值大于 0 的索引
-                #     error_rows, error_cols, error_channels = np.where(diff > 0)
-                #     total_errors = len(error_rows)
-                #     print(f"  [!] 发现 {total_errors} 个通道值有差异。")
-                    
-                #     for i in range(total_errors):
-                #         r = error_rows[i]
-                #         c = error_cols[i]
-                #         ch = error_channels[i]
-                        
-                #         orig_val = orig_img[r, c, ch]
-                #         recon_val = recon_img[r, c, ch]
-                #         error_val = diff[r, c, ch]
-                        
-                #         print(f"      -> 第 {r:3d} 行, 第 {c:3d} 列, 第 {ch} 通道 | "
-                #               f"原图: {orig_val:3d}, 重建: {recon_val:3d} | 差值: {error_val}")
-                    
-                #     if total_errors > 10:
-                #         print(f"      ... (省略其余 {total_errors - 10} 个差异点)")
-                # else:
-                #     print("  [✓] 像素完全一致，零误差重建！")
-                # ============================================================
+                results[channel][snr]['mse'].append(mse)
                 
-                ssim_value = ssim(orig_img, recon_img, data_range=255, multichannel=True, channel_axis=-1)
-                
-                results[channel][snr]['psnr'].append(psnr_value)
-                results[channel][snr]['ssim'].append(ssim_value)
-                
+                # ----------------------------------------------------
+                # 2. 计算标准 SSIM
+                # ----------------------------------------------------
+                ssim_val = ssim(orig_img, recon_img, data_range=255, multichannel=True, channel_axis=-1)
+                results[channel][snr]['ssim'].append(ssim_val)
+                               
             except Exception as e:
                 print(f"Error processing image pair (channel={channel}, SNR={snr}, idx={idx}): {e}")
 
-# 计算平均值
-averages = {channel: {'psnr': [], 'ssim': []} for channel in channels}
-for channel in channels:
-    for snr in snr_values:
-        psnr_list = results[channel][snr]['psnr']
-        ssim_list = results[channel][snr]['ssim']
-        if psnr_list and ssim_list:  # 确保列表不为空
-            avg_psnr = np.mean(psnr_list)
-            avg_ssim = np.mean(ssim_list)
-
-            averages[channel]['psnr'].append(avg_psnr)
-            averages[channel]['ssim'].append(avg_ssim)
-        else:
-            print(f"Warning: No data for {channel}, SNR={snr}")
-
+# ================= 汇总与写入 CSV =================
 with open(csv_filename, 'w', newline='') as csvfile:
     writer = csv.writer(csvfile)
-    writer.writerow(['Channel', 'SNR', 'Avg PSNR', 'Avg SSIM'])
+    # 更新了 CSV 表头
+    writer.writerow(['Channel', 'SNR', 'PSNR', 'SSIM', 'SDOP'])
     
     for channel in channels:
-        for i, snr in enumerate(snr_values):
-            if averages[channel]['psnr']:  # 确保列表不为空
-                writer.writerow([
-                    channel, 
-                    snr, 
-                    averages[channel]['psnr'][i],
-                    averages[channel]['ssim'][i],
-                ])
+        for snr in SNR_range_test:
+            mse_list = results[channel][snr]['mse']
+            ssim_list = results[channel][snr]['ssim']
+            
+            if not mse_list:
+                continue
+                
+            # --- 1. 计算 PSNR ---
+            avg_mse = np.mean(mse_list)
+            if avg_mse < 1e-10:
+                corrected_psnr = 100.0
+            else:
+                corrected_psnr = 10 * np.log10((255.0 ** 2) / avg_mse)
+                
+            # --- 2. 计算 SSIM ---
+            avg_ssim = np.mean(ssim_list)
+            
+            # --- 3. 计算 SDOP (语义失真中断概率) ---
+            # 统计 MSE 大于容忍阈值的图片数量
+            SDOP_MSE_THRESHOLD = (255.0 ** 2) / (10 ** (SDOP_PSNR_THRESHOLD / 10))
+            outage_count = sum(1 for val in mse_list if val > SDOP_MSE_THRESHOLD)
+            sdop = outage_count / len(mse_list)
+            
+            writer.writerow([
+                channel, snr, 
+                f"{corrected_psnr:.4f}", 
+                f"{avg_ssim:.4f}", 
+                f"{sdop:.4f}"
+            ])
 
 print("处理完成！结果已保存到 csv 文件中。")

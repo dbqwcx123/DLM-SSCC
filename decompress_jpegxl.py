@@ -11,7 +11,7 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--channel", type=str, default='Rayleigh', choices=[None, 'AWGN', 'Rayleigh'])
     parser.add_argument("--channel_code", type=str, default='POLAR_K32_N64')
-    parser.add_argument("--dataset_type", type=str, default='CIFAR10', choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--dataset_type", type=str, default='Kodak', choices=['Kodak', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--root_dir", type=str, default="./image_io")
     args = parser.parse_args()
     
@@ -45,7 +45,12 @@ def main(args):
         return
     
     # 信噪比遍历 (与 DiffuGPT 对齐)
-    for SNR in range(11, -4, -2):
+    SNR_range_test = list(range(-3, 13))
+    extra_values = [0.5, 1.5, 2.5]
+    SNR_range_test.extend(extra_values)
+    SNR_range_test.sort()
+    
+    for ii, SNR in tqdm(enumerate(SNR_range_test)):
         print(f"\n{'='*30}\n📡 开始解压 SNR={SNR} 的文件...")
         input_file = os.path.join(args.input_dir, f'demo_decode_SNR_{SNR}.txt')
         save_dir_reconstructed = os.path.join(args.output_dir, f'SNR_{SNR}')

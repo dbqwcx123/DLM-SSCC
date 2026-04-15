@@ -286,7 +286,8 @@ def main(args):
     x_tensor = torch.matmul(m_tensor, code.generator_matrix.transpose(0, 1).float()) % 2
     
     # SNR 计算逻辑
-    SNR_range_test = np.arange(-3, 13, 2)
+    SNR_range_test = list(range(0, 3))
+    
     _out_channel = 2 * 8
     _float_base = 32
     codeword_len_unified = _out_channel * (constants.IMAGE_SHAPE_TEST[0]//4) * (constants.IMAGE_SHAPE_TEST[1]//4) * _float_base * constants.NUM_IMAGE_TEST
@@ -334,7 +335,7 @@ def get_args():
     parser.add_argument('--msg_filename', type=str, default='compress_output')
     
     # 核心控制参数
-    parser.add_argument('--decode_algo', type=str, default='SCL', choices=['SCL', 'BP'], help='Choose decoding algorithm')
+    parser.add_argument('--decode_algo', type=str, default='BP', choices=['SCL', 'BP'], help='Choose decoding algorithm')
     
     # 信道与编码参数
     parser.add_argument('--code_type', type=str, default='POLAR')

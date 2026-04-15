@@ -5,10 +5,11 @@ import numpy as np
 from PIL import Image
 import imagecodecs
 from tqdm import tqdm
+from natsort import natsorted
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--dataset_type", type=str, default="Kodak", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args()
@@ -42,7 +43,7 @@ def main(args):
 
     # 获取图像列表
     valid_exts = ('.png', '.jpg', '.jpeg', '.bmp')
-    image_files = sorted([f for f in os.listdir(args.input_path) if f.lower().endswith(valid_exts)])
+    image_files = natsorted([f for f in os.listdir(args.input_path) if f.lower().endswith(valid_exts)])
     
     if not image_files:
         print(f"❌ 未在 {args.input_path} 找到支持的图像文件。")

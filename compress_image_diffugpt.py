@@ -1,7 +1,13 @@
 import os
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--gpus", type=str, default='0')
+args_initial, remaining_argv = parser.parse_known_args()
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = args_initial.gpus
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # 解决 Tokenizers 死锁警告
 
-import argparse
 import time
 import torch
 import torch.nn.functional as F
@@ -78,6 +84,14 @@ class CompressionContext:
         
         # [GPU] Pixel Value -> Token ID 映射表
         self.pixel_to_token_tensor = token_indices.clone()
+        
+        # # ====== 新增：Prompt 初始化 ======
+        # prompt_text = "Every three values denote an RGB pixel of a flattened image. Predict the next RGB pixel based on the previous pixels."
+        # prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
+        # # 组合 BOS 和 Prompt Token IDs
+        # self.prefix_ids = [tokenizer.bos_token_id] + prompt_ids
+        # self.prefix_len = len(self.prefix_ids)
+        # self.prefix_tensor = torch.tensor(self.prefix_ids, dtype=torch.long, device='cuda')
 
 # ==========================================
 # 核心：真·Batch 压缩逻辑
@@ -96,19 +110,20 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
     input_ids_body = ctx.pixel_to_token_tensor[pixels_batch]
     
     bos_token = torch.tensor([tokenizer.bos_token_id], device=device).expand(batch_size, 1)
+    # 替换原本的单 BOS token，改为使用完整的前缀 (BOS + Prompt)
+    # prefix_batch = ctx.prefix_tensor.unsqueeze(0).expand(batch_size, -1)
     x = torch.cat([bos_token, input_ids_body], dim=1) # [B, Seq_Len + 1]
     
     seq_len = x.size(1)
     
-    src_mask = torch.zeros_like(x, dtype=torch.bool).to(device)
-    maskable_mask = ~src_mask
+    maskable_mask = torch.ones_like(x, dtype=torch.bool).to(device)
+    maskable_mask[:, 0] = False
+    # maskable_mask[:, :ctx.prefix_len] = False # 前缀部分（BOS + Prompt）不可 Mask
+    xt = x.masked_fill(maskable_mask, tokenizer.mask_token_id)
     attention_mask = get_anneal_attn_mask(seq_len, batch_size, dtype=model.denoise_model.dtype, device=device, attn_mask_ratio=1.0)
     
-    maskable_mask[:, 0] = False
-    xt = x.masked_fill(maskable_mask, tokenizer.mask_token_id)
-    
-    encoders = []
     output_bits_lists = []
+    encoders = []
     for _ in range(batch_size):
         buf = []
         output_bits_lists.append(buf)
@@ -121,7 +136,7 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
     profiler.tick("Model Inference (GPU)") 
 
     with torch.inference_mode():
-        for t in range(args.diffusion_steps-1, -1, -1):
+        for t in range(args.diffu_steps-1, -1, -1):
             # 1. GPU 推理 (开启混合精度，强制走 Tensor Core)
             with torch.autocast(device_type=device, dtype=torch.float16):
                 raw_logits = model(xt, attention_mask=attention_mask)
@@ -131,6 +146,9 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             logits_pixel = logits_shifted[:,:, ctx.pixel_token_ids]
             
             # 3. 置信度计算
+            # ============== 随机对照组 =================
+            # confidences = torch.rand_like(maskable_mask.float())
+            # ==========================================
             confidences = get_confidence_entropy(logits_pixel, None)            
             confidences = confidences.masked_fill(~maskable_mask, float('-inf'))
             
@@ -148,15 +166,18 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             k = max(1, min(int(num_current_masks * ratio), num_current_masks))
             
             # 排序获取 indices [B, K]
-            sorted_indices = batch_stable_sort(confidences)
+            sorted_indices = torch.argsort(confidences, dim=-1, descending=True, stable=True)
             target_indices = sorted_indices[:, :k]
+            true_token_ids = torch.gather(x, 1, target_indices)
             
             # 4. 提取数据
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
             # GPU上用 float32 计算 Softmax，极速且防溢出
             target_probs = torch.softmax(target_logits.float(), dim=-1)
-            true_token_ids = torch.gather(x, 1, target_indices)
+            # 传回 CPU 后，转换为真正的 float64，供算术编码器使用
+            target_probs_cpu = target_probs.cpu().numpy().astype(np.float64)
+            masks_left_cpu = masks_left_per_sample.cpu().numpy()
             
             # 5. 更新输入 xt (仅 GPU 更新部分，先不急着 scatter)
             # 我们需要构建一个 mask，只更新那些实际上还有 mask 的位置
@@ -168,15 +189,12 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             masks_left_expanded = masks_left_per_sample.unsqueeze(1).expand(-1, k)
             valid_k_mask = arange_k < masks_left_expanded  # [B, K] bool
 
-            # 仅在有效位置更新 xt
-            # 使用 view(-1) 展平处理来避免复杂的 gather/scatter 逻辑
+            # 展平准备 Scatter
             flat_indices = target_indices.reshape(-1)
             flat_src = true_token_ids.reshape(-1)
             flat_mask = valid_k_mask.reshape(-1)
             
-            # 只有 valid 的位置才进行 scatter 更新
-            # xt.scatter_ 无法直接接受 mask，所以我们用 tensor 索引操作
-            # 展平后的 xt 索引
+            # 计算在整个 xt (flattened) 中的绝对索引
             batch_offsets = torch.arange(batch_size, device=device) * xt.size(1)
             batch_offsets = batch_offsets.unsqueeze(1).expand(-1, k).reshape(-1)
             final_flat_indices = batch_offsets + flat_indices
@@ -188,14 +206,9 @@ def compress_image_batched(batch_pixel_arrays, model, tokenizer, ctx, args):
             maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
             
             # 6. 数据传回 CPU
-            # 传回 CPU 后，转换为真正的 float64，供算术编码器使用
-            target_probs_cpu = target_probs.cpu().numpy().astype(np.float64)
             true_pixel_vals_gpu = torch.gather(ctx.id_to_pixel_tensor, 0, true_token_ids.view(-1)).view(batch_size, k)
             true_pixel_vals_cpu = true_pixel_vals_gpu.cpu().numpy()
             
-            # 传递到 CPU 的剩余数量
-            masks_left_cpu = masks_left_per_sample.cpu().numpy()
-
             profiler.end_tick()
             profiler.tick("Arithmetic Coding (CPU)")
             
@@ -253,7 +266,7 @@ def main(args):
     BATCH_SIZE = constants.BATCH_SIZE
     batch_buffer = [] 
     
-    print(f"🚀 开始高性能扩散压缩 (True Batching + Stable Sort), T={args.diffusion_steps}...")
+    print(f"🚀 开始高性能扩散压缩 (True Batching + Stable Sort), T={args.diffu_steps}...")
     start_time_total = time.time()
     
     try:
@@ -303,13 +316,13 @@ def get_args():
     parser.add_argument("--base_model_name", type=str, default='gpt2', choices=['gpt2', 'gpt2-medium'])
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
-    parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
-    parser.add_argument("--diffusion_steps", type=int, default=100)
+    parser.add_argument("--checkpoint_dir", type=str, default='train_full_20260415_021825')#'train_full_20260415_021825', 'train_20251226_231454'
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-17000')
+    parser.add_argument("--diffu_steps", type=int, default=10)
     parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
-    args = parser.parse_args()
+    args = parser.parse_args(remaining_argv)
     
     args.model_path = os.path.join(args.model_path, args.model_name)
     if args.ddm_sft:
@@ -331,13 +344,14 @@ def get_args():
     else:
         args.input_path = os.path.join(args.input_path, args.dataset_type)
     
-    args.output_path = os.path.join(args.output_path, f'{args.dataset_type}', f'patch{constants.CHUNK_SHAPE_2D}')
+    args.output_path = os.path.join(args.output_path, f'{args.dataset_type}', f'patch{constants.CHUNK_SHAPE_2D}', 'entropy_confidence')
     if args.ddm_sft:
-        args.output_path = os.path.join(args.output_path, f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
+        args.output_path = os.path.join(args.output_path, f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffu_steps}')
     else:
-        args.output_path = os.path.join(args.output_path, f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
+        args.output_path = os.path.join(args.output_path, f'{args.model_name}', f'diffu_step{args.diffu_steps}')
     return args
 
 if __name__ == "__main__":
+    args = get_args()
     set_seed(42)
-    main(get_args())
+    main(args)

@@ -459,6 +459,6 @@ def forward_llama2(
 
 def replace_attention_mask():
     # print("Use provided 4d attn-mask")
-    transformers.models.llama.modeling_llama.LlamaModel.forward = forward_llama2
-    transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = forward_llama2fa2
+    # transformers.models.llama.modeling_llama.LlamaModel.forward = forward_llama2
+    # transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = forward_llama2fa2
     transformers.models.gpt2.modeling_gpt2.GPT2Model.forward = forward_gpt2

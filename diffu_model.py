@@ -64,9 +64,6 @@ class DiscreteDiffusionModel(nn.Module, PyTorchModelHubMixin):
 
     def get_logits(self, hidden_repr):
         return self.lm_head(hidden_repr)
-
-    def get_input_embeddings(self):
-        return self.embed_tokens
     
     def get_embeds(self, input_ids):
         return self.embed_tokens(input_ids)
@@ -134,7 +131,7 @@ def get_confidence_entropy(logits, mask_indices):
     
     # 返回负熵 (熵越小，置信度越大)
     # confidences = -selected_entropy
-    confidences = -entropy
+    confidences = entropy
     
     return confidences
 
@@ -154,7 +151,7 @@ def get_confidence_topk(logits, mask_indices):
     
     return confidences
 
-def get_confidence_simple(logits, mask_indices):
+def get_confidence_max(logits, mask_indices):
     """
     计算掩码位置的置信度。
     使用预测分布的最大概率值作为置信度。
@@ -166,66 +163,6 @@ def get_confidence_simple(logits, mask_indices):
     # confidences = max_probs[0, mask_indices]
     confidences = max_probs
     return confidences
-
-
-def conf_based_sorting(conf, mask_indices, device):
-    """
-    基于置信度对掩码位置进行排序。
-    """
-    # 将 Tensor 转为 CPU 上的列表，以免受 GPU 浮点不确定性影响
-    conf_list = conf.detach().cpu().double().numpy().tolist()
-    mask_idx_list = mask_indices.detach().cpu().numpy().tolist()
-    
-    # 构建 (confidence, original_index) 的元组列表
-    combined = list(zip(conf_list, mask_idx_list))
-    
-    # confidence 降序 -> idx 升序 (Tie-breaker)
-    combined.sort(key=lambda x: (-x[0], x[1]))
-    
-    # 提取排序后的 mask 位置
-    sorted_mask_pos_list = [item[1] for item in combined]
-    sorted_mask_pos = torch.tensor(sorted_mask_pos_list, device=device)
-    
-    return sorted_mask_pos
-
-
-def batch_stable_sort(confidences_tensor):
-    """
-    替代 torch.sort。
-    将 Batch 的置信度移至 CPU，转为 float64，并执行严格的稳定排序。
-    Args:
-        confidences_tensor: [Batch, Seq_Len] (GPU Tensor)
-    Returns:
-        sorted_indices: [Batch, Seq_Len] (GPU Tensor)
-    """
-    batch_size, seq_len = confidences_tensor.shape
-    device = confidences_tensor.device
-    
-    # 1. 转移到 CPU 并转为 float64 以获得最大精度
-    # numpy 处理 float64 比 tensor 转 list 更快一点
-    conf_cpu = confidences_tensor.detach().cpu().double().numpy()
-    
-    sorted_indices_list = []
-    
-    # 2. 逐样本进行 Python 稳定排序
-    for b in range(batch_size):
-        row_conf = conf_cpu[b]
-        # 构建 (confidence, index) 对
-        combined = []
-        for i in range(seq_len):
-            combined.append((row_conf[i], i))
-            
-        # 排序规则：
-        # 1. Confidence 降序 (-x[0])
-        # 2. Index 升序 (x[1]) -> 这就是 Tie-breaker
-        combined.sort(key=lambda x: (-x[0], x[1]))
-        
-        # 提取排序后的索引
-        indices = [item[1] for item in combined]
-        sorted_indices_list.append(indices)
-        
-    # 3. 转回 GPU
-    return torch.tensor(sorted_indices_list, dtype=torch.long, device=device)
 
 
 def shift_logits(logits):

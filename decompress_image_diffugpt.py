@@ -1,8 +1,13 @@
 import os
-# 1. 解决 Tokenizers 死锁警告
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--gpus", type=str, default='0')
+args_initial, remaining_argv = parser.parse_known_args()
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = args_initial.gpus
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # 解决 Tokenizers 死锁警告
+
 import time
 import torch
 import torch.nn.functional as F
@@ -139,7 +144,7 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
     profiler.tick("Model Inference (GPU)")
 
     with torch.inference_mode():
-        for t in range(args.diffusion_steps-1, -1, -1):
+        for t in range(args.diffu_steps-1, -1, -1):
             
             # 1. GPU 推理 (开启混合精度，强制走 Tensor Core)
             with torch.autocast(device_type=device, dtype=torch.float16):
@@ -166,11 +171,11 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             ratio = 1.0 / (t + 1)
             k = max(1, min(int(num_current_masks * ratio), num_current_masks))
             
-            # 排序
-            sorted_indices = batch_stable_sort(confidences)
+            # 排序获取 indices [B, K]
+            sorted_indices = torch.argsort(confidences, dim=-1, descending=True, stable=True)
             target_indices = sorted_indices[:, :k]
             
-            # 提取概率
+            # 4. 提取数据
             batch_indices_expanded = target_indices.unsqueeze(-1).expand(-1, -1, logits_pixel.size(-1))
             target_logits = torch.gather(logits_pixel, 1, batch_indices_expanded)
             # GPU上用 float32 计算 Softmax，极速且防溢出
@@ -221,12 +226,10 @@ def decompress_image_batched(batch_bit_strings, model, tokenizer, ctx, args):
             batch_offsets = batch_offsets.unsqueeze(1).expand(-1, k).reshape(-1)
             final_flat_indices = batch_offsets + flat_indices
             
-            # 只更新 valid 的部分！
-            # 如果不加这个 mask，decoded_pixel_values 里的 0 (初始值) 会覆盖掉那些
-            # 本来已经解码完成（但因为 batch 同步被强制选中的）像素。
+            # 执行更新：只更新 valid_k_mask 为 True 的部分
             xt.view(-1)[final_flat_indices[flat_mask]] = flat_src[flat_mask]
             
-            # 更新 Mask
+            # 更新 maskable_mask (设为 False)
             maskable_mask.view(-1)[final_flat_indices[flat_mask]] = False
             
     profiler.tick("Finalize")
@@ -313,7 +316,9 @@ def main(args):
         return
     
     # channel = AWGN/Rayleigh
-    SNR_range_test = np.arange(0.5,args.snr_max,1)
+    # SNR_range_test = np.arange(0.5,args.snr_max,1)
+    SNR_range_test = list(range(-3, args.snr_max))
+    
     for ii, SNR in tqdm(enumerate(SNR_range_test)):
         print(f"\n{'='*30}\n开始解压 SNR={SNR} 的文件...")
         args.input_file = args.input_dir + '/demo_decode_SNR_' + str(SNR) + '.txt'
@@ -321,7 +326,7 @@ def main(args):
     
     # # channel = None
     # for SNR in [0]:
-    #     args.input_file = args.input_dir + '/compressed_output.txt'
+    #     args.input_file = args.input_dir + '/compress_output.txt'
     #     save_dir_reconstructed = os.path.join(args.output_dir, 'recon_clean')
         
         os.makedirs(save_dir_reconstructed, exist_ok=True)
@@ -409,22 +414,22 @@ def get_args():
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
     parser.add_argument("--checkpoint_dir", type=str, default='train_20251226_231454')
     parser.add_argument("--checkpoint_name", type=str, default='checkpoint-26000')
-    parser.add_argument("--diffusion_steps", type=int, default=100)
+    parser.add_argument("--diffu_steps", type=int, default=100)
     parser.add_argument("--channel", type=str, default='AWGN', choices=[None, 'AWGN', 'Rayleigh'])
     parser.add_argument("--channel_code", type=str, default='POLAR_K32_N64')
-    parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--dataset_type", type=str, default="Kodak", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--root_dir", type=str, default="./image_io")
-    parser.add_argument("--snr_max", type=int, default=3)
-    args = parser.parse_args()
+    parser.add_argument("--snr_max", type=int, default=0)
+    args = parser.parse_args(remaining_argv)
     
     args.model_path = os.path.join(args.model_path, args.model_name)
     if args.ddm_sft:
         args.model_path = os.path.join(args.model_path, "ddm-sft", args.checkpoint_dir, args.checkpoint_name)
     args.root_dir = os.path.join(args.root_dir, f'{args.dataset_type}', f'patch{constants.CHUNK_SHAPE_2D}')
     if args.ddm_sft:
-        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffusion_steps}')
+        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}_ddm-sft', f'{args.checkpoint_dir}', f'diffu_step{args.diffu_steps}')
     else:
-        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}', f'diffu_step{args.diffusion_steps}')
+        args.root_dir = os.path.join(args.root_dir, f'{args.model_name}', f'diffu_step{args.diffu_steps}')
     
     if args.channel:
         args.input_dir  = os.path.join(args.root_dir, f"MM_ECCT_forward/{args.channel_code}/{args.channel}")
@@ -436,5 +441,6 @@ def get_args():
     return args
 
 if __name__ == "__main__":
+    args = get_args()
     set_seed(42)
-    main(get_args())
+    main(args)

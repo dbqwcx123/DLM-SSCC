@@ -176,3 +176,5 @@ image_io/
 .vscode/
 Model_test/
 Codes_DB/
+_curves/
+*.sh

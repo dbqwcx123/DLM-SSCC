@@ -217,7 +217,9 @@ def main(args):
     
     print(f'Transmission channel type: {args.channel}')
     
-    SNR_range_test = np.arange(-3,13,1)
+    # SNR_range_test = np.arange(0.5,3,1)
+    SNR_range_test = list(range(-3,13))
+    
     ## TODO: 这里需要根据 baseline 调整 codeword_len
     _out_channel = 2*8
     _float_base = 32
@@ -295,11 +297,14 @@ def get_args():
     parser.add_argument('--code_type', type=str, default='POLAR', choices=['BCH', 'POLAR', 'LDPC', 'CCSDS', 'MACKAY'])
     parser.add_argument('--code_k', type=int, default=32)
     parser.add_argument('--code_n', type=int, default=64)
-    parser.add_argument('--channel', type=str, default='Rayleigh', choices=['AWGN', 'Rayleigh'])
-    parser.add_argument("--dataset_type", type=str, default='DIV2K_LR_X4', choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
-    parser.add_argument('--mode', type=str, default='JPEG_XL')  # 'JPEG_XL', 'patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454/diffu_step10'
+    parser.add_argument('--channel', type=str, default='AWGN', choices=['AWGN', 'Rayleigh'])
+    parser.add_argument("--dataset_type", type=str, default='Kodak', choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument('--mode', type=str, default='patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454/diffu_step10')  # 'JPEG_XL', 'patch(16, 16)/diffugpt-s_ddm-sft/train_20251226_231454/diffu_step'
+    # parser.add_argument('--diffu_step', type=int, default=10)
     
     args = parser.parse_args()
+    # args.mode += f'{args.diffu_step}'
+    
     return args
 
 
