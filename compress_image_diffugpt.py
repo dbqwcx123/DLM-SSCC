@@ -317,9 +317,9 @@ def get_args():
     parser.add_argument("--model_path", type=str, default='../Model', help="DiffuGPT path")
     parser.add_argument("--ddm_sft", type=bool, default=True, help="是否微调")
     parser.add_argument("--checkpoint_dir", type=str, default='train_full_20260415_021825')#'train_full_20260415_021825', 'train_20251226_231454'
-    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-17000')
+    parser.add_argument("--checkpoint_name", type=str, default='checkpoint-30000')
     parser.add_argument("--diffu_steps", type=int, default=10)
-    parser.add_argument("--dataset_type", type=str, default="CIFAR10", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
+    parser.add_argument("--dataset_type", type=str, default="DIV2K_LR_X4", choices=['CIFAR10', 'DIV2K_LR_X4', 'DIV2K_HR', 'Kodak'])
     parser.add_argument("--input_path", type=str, default="../Dataset")
     parser.add_argument("--output_path", type=str, default="./image_io")
     args = parser.parse_args(remaining_argv)

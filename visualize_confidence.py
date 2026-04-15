@@ -17,7 +17,7 @@ def get_args():
     parser.add_argument("--model_name", type=str, default='diffugpt-s')
     parser.add_argument("--base_model_name", type=str, default='gpt2')
     parser.add_argument("--model_path", type=str, default='../Model')
-    parser.add_argument("--diffu_steps", type=int, default=10)
+    parser.add_argument("--diffu_steps", type=int, default=100)
 
     # 可视化模式:
     # init  : 不做 rollout，直接看全 MASK 初始状态
@@ -40,7 +40,7 @@ def get_args():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--save_path", type=str, default="confidence_spatial_heatmap_rollout.png")
     parser.add_argument("--checkpoint_path", type=str, default="../Model/diffugpt-s/ddm-sft/train_20251226_231454/checkpoint-26000")
-    # parser.add_argument("--checkpoint_path", type=str, default="../Model/diffugpt-s/ddm-sft/train_full_20260415_021825/checkpoint-15000")
+    # parser.add_argument("--checkpoint_path", type=str, default="../Model/diffugpt-s/ddm-sft/train_full_20260415_021825/checkpoint-29000")
     return parser.parse_args()
 
 
@@ -213,7 +213,7 @@ def main(args):
             confidences = get_confidence_entropy(logits_pixel, None)
 
             # 只保留像素位置，去掉 BOS
-            patch_conf = confidences[:, 1:].float().cpu().numpy()
+            patch_conf = abs(confidences[:, 1:].float().cpu().numpy())
             patch_mask = maskable_mask[:, 1:].float().cpu().numpy()
 
             all_patch_confs.append(patch_conf)
@@ -251,7 +251,7 @@ def main(args):
     plt.subplot(1, 3, 3)
     plt.title(f"Confidence on Remaining Masks (t={stop_t})", fontsize=14)
     im = plt.imshow(masked_heatmap, cmap="magma")
-    plt.colorbar(im, fraction=0.046, pad=0.04, label="Confidence (-Entropy)")
+    plt.colorbar(im, fraction=0.046, pad=0.04, label="Entropy")
     plt.axis("off")
 
     plt.tight_layout()

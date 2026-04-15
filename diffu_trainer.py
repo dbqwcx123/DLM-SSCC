@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import os
 from utils.pixel_token_dict import *
-from diffu_model import shift_logits
+from diffu_model import shift_logits, get_confidence_entropy
 from llamafactory.train.ddm.trainer import CustomDiffusionTrainer, get_anneal_attn_mask
 
 class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
@@ -27,12 +27,70 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
         for tid, pixel in self.token_id_to_pixel.items():
             self.vocab_map[tid] = pixel
 
-        # [新增超参数] 难度加权因子 (Gamma)
-        # gamma = 0: 退化为标准交叉熵 (原版)
-        # gamma > 0: 值越大，模型越将注意力集中在那些“预测概率低”的困难像素上
-        # 建议调参范围：1.0 ~ 2.0
-        self.focal_gamma = 2.0 
+        self._transition_model = None
+        self._transition_attention_mask = None
+        
+        # ==================== 难度加权因子 (Gamma) ====================
+        # gamma > 0: 值越大，模型越将注意力集中在“预测概率低”的困难像素上
+        # self.focal_gamma = 2.0 
+        # =============================================================
 
+
+    def transition(self, x_0, sigma, maskable_mask):
+        """
+        基于全可见 x_0 的内在信息密度（自回归熵）进行引导的掩码策略。
+        低熵位置优先被 mask，高熵位置优先保留可见。
+        """
+        device = x_0.device
+        batch_size, seq_len = x_0.shape
+        move_chance = sigma
+        
+        # 当前应 mask 的数量
+        num_maskable = maskable_mask.sum(dim=1)  # [B]
+        num_to_mask = torch.round(move_chance * num_maskable.float()).long()
+        num_to_mask = torch.clamp(num_to_mask, min=0)
+        num_to_mask = torch.minimum(num_to_mask, num_maskable)
+
+        was_training = self._transition_model.training
+        self._transition_model.eval()
+        
+        with torch.no_grad():
+            # 1) 直接在全可见 x_0 上前向
+            raw_logits = self._transition_model(x_0, attention_mask=self._transition_attention_mask)
+            logits_shifted = shift_logits(raw_logits)
+            logits_pixel = logits_shifted[:, :, self.pixel_token_ids] 
+            
+        # 熵从小到大排序：低熵位置优先被 mask
+        entropy = get_confidence_entropy(logits_pixel, None)
+        entropy = entropy.masked_fill(~maskable_mask, float("inf"))
+        sorted_indices = torch.argsort(entropy, dim=-1, descending=False, stable=True)
+            
+        move_indices = torch.zeros_like(maskable_mask, dtype=torch.bool)
+        max_k = int(num_to_mask.max().item())
+
+        if max_k > 0:
+            target_indices = sorted_indices[:, :max_k]   # [B, K]
+
+            arange_k = torch.arange(max_k, device=device).unsqueeze(0).expand(batch_size, -1)
+            valid_mask = arange_k < num_to_mask.unsqueeze(1)   # [B, K]
+
+            flat_indices = target_indices.reshape(-1)
+            flat_valid = valid_mask.reshape(-1)
+
+            batch_offsets = torch.arange(batch_size, device=device) * seq_len
+            batch_offsets = batch_offsets.unsqueeze(1).expand(-1, max_k).reshape(-1)
+            final_flat_indices = batch_offsets + flat_indices
+
+            move_indices.view(-1)[final_flat_indices[flat_valid]] = True
+
+        x_t = torch.where(move_indices, self.tokenizer.mask_token_id, x_0)
+        
+        if was_training:
+            self._transition_model.train()
+            
+        return x_t
+        
+    
     def inner_forward(self, model, inputs, eval=False):
         """
         重写 inner_forward 以实现 Image-Specific 的 Loss 计算
@@ -77,13 +135,21 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
             attn_mask_ratio=attn_mask_ratio
         )
 
-        # --- 3. 用“基于置信度的 transition”构造 x_t ---
+        # --- 3. 把当前 batch 的 model / attention_mask 临时缓存给 transition ---
+        self._transition_model = model
+        self._transition_attention_mask = attention_mask
+
+        # --- 4. 用 transition 构造 x_t ---
         x_t = self.transition(x, sigma[:, None], maskable_mask=~src_mask)
 
-        # --- 4. 正常训练前向 ---
+        # 用完清空
+        self._transition_model = None
+        self._transition_attention_mask = None
+
+        # --- 5. 正常训练前向 ---
         raw_logits = model(x_t, attention_mask=attention_mask)
 
-        # --- 5. 核心修改：Logit Restriction & Loss Calculation ---
+        # --- 6. 核心修改：Logit Restriction & Loss Calculation ---
         
         # (1) 只有被 Mask 掉的位置才计算 Loss
         loss_mask = (x_t == self.tokenizer.mask_token_id)
@@ -126,23 +192,20 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
             dsigma = dsigma.float()
 
             # ====================================================================
-            # 【新增核心逻辑】：基于预测难度的局部信息量加权 (Focal-like Weighting)
-            # ====================================================================
-            # 1. 还原模型对“真实类别”的预测概率 pt
-            # 对于 full_targets == -1 的位置，loss 为 0，对应的 pt = 1.0
-            pt = torch.exp(-loss_per_token)
-            
-            # 2. 计算局部难度权重
-            # 如果模型猜得很准 (pt -> 1)，这是大面积背景/冗余信息，权重 -> 0
-            # 如果模型猜不准 (pt -> 0)，这是边缘/高频细节/高信息量像素，权重 -> 1
-            difficulty_weights = (1 - pt) ** self.focal_gamma
-            
-            # 3. 将难度权重叠加到像素级的 NLL 上
-            loss_per_token_weighted = loss_per_token * difficulty_weights
+            # # 基于预测难度的局部信息量加权 (Focal-like Weighting)
+            # # 1. 还原模型对“真实类别”的预测概率 pt
+            # # 对于 full_targets == -1 的位置，loss 为 0，对应的 pt = 1.0
+            # pt = torch.exp(-loss_per_token)
+            # # 2. 计算局部难度权重
+            # # 如果模型猜得很准 (pt -> 1)，这是大面积背景/冗余信息，权重 -> 0
+            # # 如果模型猜不准 (pt -> 0)，这是边缘/高频细节/高信息量像素，权重 -> 1
+            # difficulty_weights = (1 - pt) ** self.focal_gamma
+            # # 3. 将难度权重叠加到像素级的 NLL 上
+            # loss_per_token_weighted = loss_per_token * difficulty_weights
             # ====================================================================
 
-            # 4. 结合宏观的时间步扩散率 dsigma，计算最终的 batch 维度 Loss
-            weighted_loss = (dsigma[:, None] * loss_per_token_weighted).sum() 
+            # 7. 结合宏观的时间步扩散率 dsigma，计算最终的 batch 维度 Loss
+            weighted_loss = (dsigma[:, None] * loss_per_token).sum() 
             num_active_tokens = loss_mask.sum().float()
             
             final_loss = weighted_loss / (num_active_tokens + 1e-5)
@@ -159,7 +222,7 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
                         'custom/total_loss': final_loss.item(), 
                         'custom/unweighted_loss': unweighted_loss.item(),
                         # 额外监控难度权重的均值，看看模型是不是越学越自信
-                        'custom/mean_difficulty_weight': difficulty_weights[loss_mask].mean().item() if 'difficulty_weights' in locals() and loss_mask.any() else 0.0
+                        # 'custom/mean_difficulty_weight': difficulty_weights[loss_mask].mean().item() if 'difficulty_weights' in locals() and loss_mask.any() else 0.0
                     }, commit=False)
 
         return final_loss

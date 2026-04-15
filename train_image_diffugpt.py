@@ -268,7 +268,7 @@ def run_finetuning():
     parser.add_argument("--batch_size", type=int, default=8)
     # parser.add_argument("--grad_acc_step", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--epoch", type=int, default=20)
+    parser.add_argument("--epoch", type=int, default=30)
     
     args = parser.parse_args()
     
