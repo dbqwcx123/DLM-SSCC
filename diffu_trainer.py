@@ -29,65 +29,13 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
 
         self._transition_model = None
         self._transition_attention_mask = None
-        
-        # ==================== 难度加权因子 (Gamma) ====================
-        # gamma > 0: 值越大，模型越将注意力集中在“预测概率低”的困难像素上
-        # self.focal_gamma = 2.0 
-        # =============================================================
 
 
     def transition(self, x_0, sigma, maskable_mask):
-        """
-        基于全可见 x_0 的内在信息密度（自回归熵）进行引导的掩码策略。
-        低熵位置优先被 mask，高熵位置优先保留可见。
-        """
-        device = x_0.device
-        batch_size, seq_len = x_0.shape
+        # move_chance = 1 - (-sigma).exp()
         move_chance = sigma
-        
-        # 当前应 mask 的数量
-        num_maskable = maskable_mask.sum(dim=1)  # [B]
-        num_to_mask = torch.round(move_chance * num_maskable.float()).long()
-        num_to_mask = torch.clamp(num_to_mask, min=0)
-        num_to_mask = torch.minimum(num_to_mask, num_maskable)
-
-        was_training = self._transition_model.training
-        self._transition_model.eval()
-        
-        with torch.no_grad():
-            # 1) 直接在全可见 x_0 上前向
-            raw_logits = self._transition_model(x_0, attention_mask=self._transition_attention_mask)
-            logits_shifted = shift_logits(raw_logits)
-            logits_pixel = logits_shifted[:, :, self.pixel_token_ids] 
-            
-        # 熵从小到大排序：低熵位置优先被 mask
-        entropy = get_confidence_entropy(logits_pixel, None)
-        entropy = entropy.masked_fill(~maskable_mask, float("inf"))
-        sorted_indices = torch.argsort(entropy, dim=-1, descending=False, stable=True)
-            
-        move_indices = torch.zeros_like(maskable_mask, dtype=torch.bool)
-        max_k = int(num_to_mask.max().item())
-
-        if max_k > 0:
-            target_indices = sorted_indices[:, :max_k]   # [B, K]
-
-            arange_k = torch.arange(max_k, device=device).unsqueeze(0).expand(batch_size, -1)
-            valid_mask = arange_k < num_to_mask.unsqueeze(1)   # [B, K]
-
-            flat_indices = target_indices.reshape(-1)
-            flat_valid = valid_mask.reshape(-1)
-
-            batch_offsets = torch.arange(batch_size, device=device) * seq_len
-            batch_offsets = batch_offsets.unsqueeze(1).expand(-1, max_k).reshape(-1)
-            final_flat_indices = batch_offsets + flat_indices
-
-            move_indices.view(-1)[final_flat_indices[flat_valid]] = True
-
+        move_indices = (torch.rand(*x_0.shape, device=x_0.device) < move_chance) & maskable_mask
         x_t = torch.where(move_indices, self.tokenizer.mask_token_id, x_0)
-        
-        if was_training:
-            self._transition_model.train()
-            
         return x_t
         
     
@@ -150,7 +98,6 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
         raw_logits = model(x_t, attention_mask=attention_mask)
 
         # --- 6. 核心修改：Logit Restriction & Loss Calculation ---
-        
         # (1) 只有被 Mask 掉的位置才计算 Loss
         loss_mask = (x_t == self.tokenizer.mask_token_id)
         
@@ -190,19 +137,6 @@ class ImageDiscreteDiffusionTrainer(CustomDiffusionTrainer):
             # 转为 float 确保精度
             loss_per_token = loss_per_token.float()
             dsigma = dsigma.float()
-
-            # ====================================================================
-            # # 基于预测难度的局部信息量加权 (Focal-like Weighting)
-            # # 1. 还原模型对“真实类别”的预测概率 pt
-            # # 对于 full_targets == -1 的位置，loss 为 0，对应的 pt = 1.0
-            # pt = torch.exp(-loss_per_token)
-            # # 2. 计算局部难度权重
-            # # 如果模型猜得很准 (pt -> 1)，这是大面积背景/冗余信息，权重 -> 0
-            # # 如果模型猜不准 (pt -> 0)，这是边缘/高频细节/高信息量像素，权重 -> 1
-            # difficulty_weights = (1 - pt) ** self.focal_gamma
-            # # 3. 将难度权重叠加到像素级的 NLL 上
-            # loss_per_token_weighted = loss_per_token * difficulty_weights
-            # ====================================================================
 
             # 7. 结合宏观的时间步扩散率 dsigma，计算最终的 batch 维度 Loss
             weighted_loss = (dsigma[:, None] * loss_per_token).sum() 
